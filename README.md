@@ -10,10 +10,10 @@ Personal macOS media scripts: interactive ffmpeg helpers for video and audio.
 | Path | Purpose |
 | ---- | ------- |
 | [`bin/`](bin/) | Executable scripts |
-| [`lib/`](lib/) | Shared code, partial files, if needed |
+| [`context/`](context/) | Context for assistants |
 | [`inprogress/`](inprogress/) | Media currently being processed; clear when done |
-| [`specs/`](specs/) | Specs: `specs/<script-name>.txt` |
-| [`AI/`](AI/) | Context for assistants |
+| [`lib/`](lib/) | Shared code, if needed |
+| [`specs/`](specs/) | Script specifications |
 
 ## Requirements
 
