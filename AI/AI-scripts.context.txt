@@ -1,6 +1,6 @@
 # AI context — mac-media-scripts
 Репозиторий: /Users/lis/DEV/scripts → https://github.com/LisKorzun/mac-media-scripts
-Читай этот файл перед правками. Для людей: [[README.md]]. ТЗ: [[docs/to-mp4.txt]].
+Читай этот файл перед правками. Для людей: [[README.md]]. ТЗ: [[specs/to-mp4.txt]].
 
 ## Зачем
 Bash-скрипты для медиа на macOS. Сюда только инструменты; готовые файлы — в библиотеки владельца.
@@ -13,7 +13,7 @@ Bash-скрипты для медиа на macOS. Сюда только инст
 | `bin/`        | запускаемые скрипты (kebab-case: `to-mp4`, …)      |
 | `lib/`        | общие куски shell, если появятся                   |
 | `inprogress/` | временные медиа; после работы очищать              |
-| `docs/`       | ТЗ: `docs/<script-name>.txt`                       |
+| `specs/`      | ТЗ: `specs/<script-name>.txt`                      |
 | `AI/`         | этот context + `WIP.txt`                           |
 | `.cursor/`    | slash-команды проекта                              |
 | корень        | `README.md`, `.gitignore`                          |
@@ -47,10 +47,10 @@ Bash-скрипты для медиа на macOS. Сюда только инст
 `to-mp4` по ТЗ: **libx264 + CRF**, не VideoToolbox.
 
 ## План
-1. Реализовать `bin/to-mp4` по [[docs/to-mp4.txt]] — ещё не написан.
+1. Реализовать `bin/to-mp4` по [[specs/to-mp4.txt]] — ещё не написан.
 2. Дальше по запросу: `cut-copy` и др.
 
-Не начинать скрипт без явного «пиши» / рабочей сессии; правки ТЗ — в `docs/`.
+Не начинать скрипт без явного «пиши» / рабочей сессии; правки ТЗ — в `specs/`.
 
 ## Как писать код
 - Bash (или zsh-совместимый), имена в `bin/`: **kebab-case**.
