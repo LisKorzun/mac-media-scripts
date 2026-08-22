@@ -324,12 +324,14 @@ cmd+=("${map_args[@]}")
 if [[ "$width" -gt 0 ]]; then
   cmd+=(-vf "scale=${width}:-2")
 fi
-cmd+=(-c:v libx264 -crf "$crf" -preset medium -c:a aac -ac 2 -b:a 192k)
+cmd+=(-c:v libx264 -crf "$crf" -preset medium -pix_fmt yuv420p -c:a aac -ac 2 -b:a 192k)
 if [[ ${#sel_sub[@]} -gt 0 ]]; then
   cmd+=(-c:s mov_text)
 fi
 cmd+=(-movflags +faststart "$out")
 
 "${cmd[@]}"
+
+xattr -c "$out" 2>/dev/null || true
 
 picked "Done: ${out#./}"
