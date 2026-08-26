@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Cut a clip from an already-converted MP4 (stream copy, no re-encode).
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }
+}
+
+need ffmpeg
+need ffprobe
+need python3
+
+parseTime() {
+  python3 -c '
+import re, sys
+s = sys.argv[1].strip()
+if re.fullmatch(r"\d+(\.\d+)?", s):
+    print(float(s))
+    raise SystemExit(0)
+parts = s.split(":")
+try:
+    if len(parts) == 2:
+        m, sec = parts
+        print(int(m) * 60 + float(sec))
+    elif len(parts) == 3:
+        h, m, sec = parts
+        print(int(h) * 3600 + int(m) * 60 + float(sec))
+    else:
+        raise ValueError
+except Exception:
+    raise SystemExit(1)
+' "$1"
+}
+
+fmtTime() {
+  python3 -c '
+import sys
+t = max(0.0, float(sys.argv[1]))
+h = int(t // 3600)
+m = int((t % 3600) // 60)
+s = t - h * 3600 - m * 60
+print("%02d:%02d:%06.3f" % (h, m, s))
+' "$1"
+}
+
+fmtTag() {
+  python3 -c '
+import sys
+t = float(sys.argv[1])
+h = int(t // 3600)
+m = int((t % 3600) // 60)
+s = int(round(t - h * 3600 - m * 60))
+if h > 0:
+    print("%02d%02d%02d" % (h, m, s))
+else:
+    print("%02d%02d" % (m, s))
+' "$1"
+}
+
+askTime() {
+  local prompt=$1
+  local val sec
+  while true; do
+    printf "${C_PROMPT}%s${C_RESET} " "$prompt" >&2
+    read -r val
+    if sec=$(parseTime "$val" 2>/dev/null); then
+      echo "$sec"
+      return 0
+    fi
+    echo "Bad time. Use seconds (90), m:ss (1:30), or h:mm:ss (0:01:30)" >&2
+  done
+}
+
+files=()
+while IFS= read -r -d '' f; do
+  files+=("$f")
+done < <(find . -maxdepth 1 -type f -iname '*.mp4' ! -name '*_cut_*' -print0 | sort -z)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "No MP4 files in $(pwd)"
+  echo "This tool cuts already-converted MP4 only."
+  exit 1
+fi
+
+banner "Found MP4 files:"
+i=1
+for f in "${files[@]}"; do
+  printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${f#./}"
+  i=$((i + 1))
+done
+echo "${C_HEAD}${SEP}${C_RESET}"
+
+while true; do
+  printf "${C_PROMPT}Select MP4 to cut (1-%d):${C_RESET} " "${#files[@]}"
+  read -r pick
+  if [[ "$pick" =~ ^[1-9][0-9]*$ ]] && [[ "$pick" -ge 1 && "$pick" -le ${#files[@]} ]]; then
+    src="${files[$((pick - 1))]}"
+    break
+  fi
+  echo "Please enter a number from 1 to ${#files[@]}"
+done
+picked "Selected: ${src#./}"
+
+dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$src")
+dur_h=$(fmtTime "$dur")
+echo "${C_MUTED}Duration: ${dur_h}${C_RESET}"
+
+banner "Cut mode:"
+echo "1. Enter start, then end time (default)"
+echo "2. Length from start"
+echo "3. Length from end"
+echo "${C_MUTED}Tip: times as 90  or  1:30  or  0:01:30${C_RESET}"
+echo "${C_MUTED}Copy may snap to a nearby keyframe (a short shift is normal).${C_RESET}"
+echo "${C_HEAD}${SEP}${C_RESET}"
+printf "${C_PROMPT}Your choice (1-3) [1]:${C_RESET} "
+read -r mode
+mode=${mode:-1}
+
+start_sec=0
+end_sec=0
+len_sec=0
+mode_label=""
+
+case "$mode" in
+  1)
+    while true; do
+      start_sec=$(askTime "Start time:")
+      ok=$(python3 -c "print(1 if 0 <= float('$start_sec') < float('$dur') else 0)")
+      if [[ "$ok" == "1" ]]; then
+        break
+      fi
+      echo "Start must be >= 0 and < file duration ($dur_h)" >&2
+    done
+    picked "Start: $(fmtTime "$start_sec")"
+    while true; do
+      end_sec=$(askTime "End time:")
+      ok=$(python3 -c "print(1 if float('$start_sec') < float('$end_sec') <= float('$dur') else 0)")
+      if [[ "$ok" == "1" ]]; then
+        break
+      fi
+      echo "End must be > start and <= file duration ($dur_h)" >&2
+    done
+    len_sec=$(python3 -c "print(float('$end_sec') - float('$start_sec'))")
+    mode_label="start → end"
+    picked "End: $(fmtTime "$end_sec")"
+    ;;
+  2)
+    while true; do
+      len_sec=$(askTime "Clip length (from start):")
+      ok=$(python3 -c "print(1 if 0 < float('$len_sec') <= float('$dur') else 0)")
+      if [[ "$ok" == "1" ]]; then
+        break
+      fi
+      echo "Length must be > 0 and <= file duration ($dur_h)" >&2
+    done
+    start_sec=0
+    end_sec=$len_sec
+    mode_label="length from start"
+    picked "Mode: from start, length $(fmtTime "$len_sec")"
+    ;;
+  3)
+    while true; do
+      len_sec=$(askTime "Clip length (from end):")
+      ok=$(python3 -c "print(1 if 0 < float('$len_sec') <= float('$dur') else 0)")
+      if [[ "$ok" == "1" ]]; then
+        break
+      fi
+      echo "Length must be > 0 and <= file duration ($dur_h)" >&2
+    done
+    start_sec=$(python3 -c "print(float('$dur') - float('$len_sec'))")
+    end_sec=$dur
+    mode_label="length from end"
+    picked "Mode: from end, length $(fmtTime "$len_sec")"
+    ;;
+  *) echo "Bad mode choice"; exit 1 ;;
+esac
+
+len_sec=$(python3 -c "print(float('$end_sec') - float('$start_sec'))")
+
+base=$(basename "$src")
+base="${base%.*}"
+case "$mode" in
+  1) tag="$(fmtTag "$start_sec")-$(fmtTag "$end_sec")" ;;
+  2) tag="fromstart_$(fmtTag "$len_sec")" ;;
+  3) tag="fromend_$(fmtTag "$len_sec")" ;;
+esac
+out="./${base}_cut_${tag}.mp4"
+
+banner "Summary:"
+echo "  input     $(basename "$src")"
+echo "  output    ${out#./}"
+echo "  mode      $mode_label"
+echo "  start     $(fmtTime "$start_sec")"
+echo "  end       $(fmtTime "$end_sec")"
+echo "  length    $(fmtTime "$len_sec")"
+echo "  encode    stream copy (no re-encode)"
+echo "${C_HEAD}${SEP}${C_RESET}"
+printf "${C_PROMPT}Start cut? [Y/n]:${C_RESET} "
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+# -ss after -i + make_zero: reset timeline to 0 (avoids long black screen)
+# map 0:V = video without attached covers; skip data tracks
+ffmpeg -hide_banner -y -i "$src" \
+  -ss "$start_sec" -t "$len_sec" \
+  -map '0:V' -map '0:a?' -map '0:s?' \
+  -c copy \
+  -avoid_negative_ts make_zero \
+  -fflags +genpts \
+  -movflags +faststart \
+  "$out"
+
+xattr -c "$out" 2>/dev/null || true
+
+out_dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$out" 2>/dev/null || echo "?")
+picked "Done: ${out#./}"
+echo "${C_MUTED}Output duration: $(fmtTime "$out_dur")${C_RESET}"
