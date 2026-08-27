@@ -49,11 +49,11 @@ Do this **once per Mac**. Typing `export PATH=...` only in Terminal does **not**
    Expected: `/Users/lis/DEV/scripts/bin/to-mp4`
    Or close Terminal and open a **new** window — new windows load `~/.zshrc` automatically; then run `which to-mp4` again.
 
-All scripts in `[bin/](bin/)` work the same way after this (`to-mp4`, future tools, etc.).
+All scripts in `[bin/](bin/)` work the same way after this (`to-mp4`, `cut-mp4`, `tailwind-clr`, etc.).
 
 ## Running scripts
 
-Scripts look for video files in **the folder you are in** (`cd` there first). Output is written next to the source file.
+Media scripts look for video files in **the folder you are in** (`cd` there first). Output is written next to the source file.
 
 Example with `[to-mp4](specs/to-mp4.txt)`:
 
@@ -71,10 +71,21 @@ cd ~/DEV/scripts/inprogress
 ~/DEV/scripts/bin/to-mp4
 ```
 
+### Tailwind color list
+
+`[tailwind-clr](specs/tailwind-clr.txt)` builds a macOS `.clr` from the current Tailwind theme (needs `curl`, `python3`, `swift`):
+
+```bash
+tailwind-clr              # → inprogress/tailwind.clr (review, then move)
+tailwind-clr --install    # → ~/Library/Colors/Tailwind.clr
+```
+
+Do **not** double-click the `.clr` in Finder (macOS asks for an app). Open **Colors** anywhere → **Color Palettes** tab → **⋯** → **Open…** → pick the file. For a permanent list: `tailwind-clr --install` (or copy into `~/Library/Colors/`). Details: `[specs/tailwind-clr.txt](specs/tailwind-clr.txt)`.
+
 ## Requirements
 
 - [Homebrew](https://brew.sh)
-- **ffmpeg** (typically includes `ffprobe` and `ffplay`)
+- **ffmpeg** (typically includes `ffprobe` and `ffplay`) — for media scripts
 
 ```bash
 brew install ffmpeg

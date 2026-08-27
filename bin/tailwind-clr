@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Build macOS .clr palette from current Tailwind CSS default colors.
+set -euo pipefail
+
+SRC_URL='https://raw.githubusercontent.com/tailwindlabs/tailwindcss/main/packages/tailwindcss/theme.css'
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="$ROOT/inprogress/tailwind.clr"
+INSTALL=0
+LIST_NAME='Tailwind'
+
+usage() {
+  echo "usage: tailwind-clr [-o PATH] [--install]"
+  echo "  fetch Tailwind theme.css → macOS .clr color list"
+  echo "  default out: <repo>/inprogress/tailwind.clr"
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      [[ $# -ge 2 ]] || usage
+      OUT=$2
+      shift 2
+      ;;
+    --install)
+      INSTALL=1
+      shift
+      ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }
+}
+
+need curl
+need python3
+need swift
+
+mkdir -p "$(dirname "$OUT")"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+echo "fetch $SRC_URL"
+curl -fsSL "$SRC_URL" -o "$tmp/theme.css"
+
+python3 - "$tmp/theme.css" "$tmp/colors.json" <<'PY'
+import json, math, re, sys
+
+css_path, out_path = sys.argv[1], sys.argv[2]
+text = open(css_path, encoding="utf-8").read()
+
+pat = re.compile(
+    r"--color-([a-z0-9-]+)\s*:\s*(oklch\([^)]+\)|#[0-9a-fA-F]{3,8})\s*;"
+)
+
+def clamp01(x):
+    return max(0.0, min(1.0, x))
+
+def hexToRgb(h):
+    h = h.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    if len(h) == 8:
+        h = h[:6]
+    return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+def oklchToRgb(s):
+    inner = s[s.find("(") + 1 : s.rfind(")")].strip()
+    parts = re.split(r"\s+", inner)
+    if len(parts) < 3:
+        raise ValueError(s)
+    Lraw, Craw, Hraw = parts[0], parts[1], parts[2]
+    if Lraw.endswith("%"):
+        L = float(Lraw[:-1]) / 100.0
+    else:
+        L = float(Lraw)
+        if L > 1.0:
+            L = L / 100.0
+    if Craw in ("none",):
+        C = 0.0
+    else:
+        C = float(Craw)
+    if Hraw in ("none",):
+        H = 0.0
+    else:
+        H = float(Hraw)
+    a = C * math.cos(math.radians(H))
+    b = C * math.sin(math.radians(H))
+    l_ = L + 0.3963377774 * a + 0.2158037573 * b
+    m_ = L - 0.1055613458 * a - 0.0638541728 * b
+    s_ = L - 0.0894841775 * a - 1.2914855480 * b
+    l = l_ * l_ * l_
+    m = m_ * m_ * m_
+    s = s_ * s_ * s_
+    r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g = -1.2684380046 * l + 2.6097574011 * m - 0.3414073965 * s
+    bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+
+    def toSrgb(c):
+        c = clamp01(c)
+        if c <= 0.0031308:
+            return 12.92 * c
+        return 1.055 * (c ** (1.0 / 2.4)) - 0.055
+
+    return toSrgb(r), toSrgb(g), toSrgb(bl)
+
+colors = []
+seen = set()
+for m in pat.finditer(text):
+    name, val = m.group(1), m.group(2)
+    if name in seen:
+        continue
+    seen.add(name)
+    if val.startswith("#"):
+        r, g, b = hexToRgb(val)
+    else:
+        r, g, b = oklchToRgb(val)
+    colors.append({"name": name, "r": r, "g": g, "b": b})
+
+if not colors:
+    print("no colors parsed", file=sys.stderr)
+    raise SystemExit(1)
+
+open(out_path, "w", encoding="utf-8").write(json.dumps(colors))
+print("parsed", len(colors), "colors")
+PY
+
+swift - "$tmp/colors.json" "$OUT" "$LIST_NAME" <<'SWIFT'
+import AppKit
+import Foundation
+
+let args = CommandLine.arguments
+guard args.count >= 4 else {
+    fputs("usage: swift - <json> <out.clr> <name>\nargs=\(args)\n", stderr)
+    exit(1)
+}
+let jsonPath = args[args.count - 3]
+let outPath = args[args.count - 2]
+let listName = args[args.count - 1]
+
+guard let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)),
+      let raw = try? JSONSerialization.jsonObject(with: data),
+      let items = raw as? [[String: Any]] else {
+    fputs("bad json: \(jsonPath)\n", stderr)
+    exit(1)
+}
+
+let buildName = "tw-build-\(ProcessInfo.processInfo.processIdentifier)"
+let build = NSColorList(name: buildName)
+guard build.isEditable else {
+    fputs("cannot create editable list\n", stderr)
+    exit(1)
+}
+for item in items {
+    guard let name = item["name"] as? String,
+          let r = item["r"] as? Double,
+          let g = item["g"] as? Double,
+          let b = item["b"] as? Double else { continue }
+    let color = NSColor(srgbRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1)
+    build.setColor(color, forKey: name)
+}
+
+let tmpURL = URL(fileURLWithPath: jsonPath).deletingLastPathComponent().appendingPathComponent("build.clr")
+do {
+    try build.write(to: tmpURL)
+    guard let list = NSColorList(name: listName, fromFile: tmpURL.path), list.isEditable else {
+        fputs("cannot name color list \(listName)\n", stderr)
+        exit(1)
+    }
+    try list.write(to: URL(fileURLWithPath: outPath))
+} catch {
+    fputs("failed to write \(outPath): \(error)\n", stderr)
+    exit(1)
+}
+print("wrote \(outPath) (\(items.count) colors)")
+SWIFT
+
+if [[ "$INSTALL" -eq 1 ]]; then
+  dest="$HOME/Library/Colors/${LIST_NAME}.clr"
+  mkdir -p "$HOME/Library/Colors"
+  cp -f "$OUT" "$dest"
+  # drop old lowercase copy so Color Picker does not show two lists
+  rm -f "$HOME/Library/Colors/tailwind.clr"
+  echo "installed $dest (reopen Color Picker apps to refresh)"
+fi

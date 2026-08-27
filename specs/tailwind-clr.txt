@@ -1,0 +1,42 @@
+ТЗ — tailwind-clr
+
+Назначение
+  Скачать актуальную палитру Tailwind CSS и записать macOS .clr
+  (NSColorList) для системного Color Picker / Pages / Keynote и т.п.
+
+Скрипт
+  bin/tailwind-clr
+  bash + python3 + swift (AppKit)
+
+Источник (не HTML-дока)
+  По умолчанию официальный theme.css:
+  https://raw.githubusercontent.com/tailwindlabs/tailwindcss/main/packages/tailwindcss/theme.css
+  Парсить --color-*: oklch(...) / #hex
+  Документация цветов: https://tailwindcss.com/docs/colors
+
+Выход
+  По умолчанию: <repo>/inprogress/tailwind.clr (проверить → перенести куда надо)
+  Имена ключей как у Tailwind: red-50, blue-500, black, white, …
+  Опция --install: также скопировать в ~/Library/Colors/Tailwind.clr
+
+Запуск
+  tailwind-clr
+  tailwind-clr -o ~/Desktop/tailwind.clr
+  tailwind-clr --install
+
+Как добавить в палитру (Color Picker)
+  Двойной клик по `.clr` в Finder **не работает** (просит выбрать программу).
+
+  1. Собрать файл: `tailwind-clr` → `inprogress/tailwind.clr`
+  2. Открыть окно Colors где угодно (например TextEdit → Format → Font →
+     Show Colors, или ⌘⇧C в приложении с цветом).
+  3. Вкладка Color Palettes (список палитр / квадратики).
+  4. Внизу у списка палитр — **⋯** (многоточие) → **Open…** → выбрать
+     `inprogress/tailwind.clr` (или куда перенесла файл).
+  5. В выпадающем списке палитр появится **Tailwind** → клик по swatch.
+
+  Чтобы палитра была всегда (после перезапуска приложений):
+     а) `tailwind-clr --install` → `~/Library/Colors/Tailwind.clr`
+        (старый `~/Library/Colors/tailwind.clr` удаляется)
+     б) или вручную скопировать `.clr` в `~/Library/Colors/`
+        (Finder → Go → Go to Folder… → `~/Library/Colors`)
