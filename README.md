@@ -49,17 +49,18 @@ Do this **once per Mac**. Typing `export PATH=...` only in Terminal does **not**
    Expected: `/Users/lis/DEV/scripts/bin/to-mp4`
    Or close Terminal and open a **new** window — new windows load `~/.zshrc` automatically; then run `which to-mp4` again.
 
-All scripts in `[bin/](bin/)` work the same way after this (`to-mp4`, `to-lg-tv`, `cut-mp4`, `tailwind-clr`, etc.).
+All scripts in `[bin/](bin/)` work the same way after this (`to-mp4`, `to-apple`, `to-lg-tv`, `cut-mp4`, `tailwind-clr`, etc.).
 
 ## Running scripts
 
 Media scripts look for video files in **the folder you are in** (`cd` there first). Output is written next to the source file.
 
-Example with `[to-mp4](specs/to-mp4.txt)` (macOS) or `[to-lg-tv](specs/to-lg-tv.txt)` (LG OLED C2 USB):
+Example with `[to-mp4](specs/to-mp4.txt)` (manual H.264), `[to-apple](specs/to-apple.txt)` (Mac/iPhone HEVC), or `[to-lg-tv](specs/to-lg-tv.txt)` (LG OLED C2 USB):
 
 ```bash
 cd ~/DEV/scripts/inprogress
-to-mp4      # macOS mp4
+to-mp4      # macOS mp4, pick width/CRF
+to-apple    # MacBook / iMac / iPhone
 to-lg-tv    # LG C2 USB mkv
 ```
 
