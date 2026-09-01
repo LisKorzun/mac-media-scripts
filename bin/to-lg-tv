@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+# Convert a video in the current folder for LG OLED65C24LA (C2, USB player).
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_VIDEO=$'\033[38;5;109m'
+C_AUDIO=$'\033[38;5;111m'
+C_SUB=$'\033[38;5;182m'
+C_OTHER=$'\033[38;5;246m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+OUT_W=1920
+CRF=22
+PRESET=fast
+AUDIO_BR=160k
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }
+}
+
+need ffmpeg
+need ffprobe
+need python3
+
+files=()
+while IFS= read -r -d '' f; do
+  files+=("$f")
+done < <(find . -maxdepth 1 -type f \( -iname '*.mkv' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.m4v' -o -iname '*.avi' -o -iname '*.webm' -o -iname '*.ts' -o -iname '*.m2ts' \) -print0 | sort -z)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "No video files in $(pwd)"
+  exit 1
+fi
+
+banner "Found video files:"
+i=1
+for f in "${files[@]}"; do
+  printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${f#./}"
+  i=$((i + 1))
+done
+echo "${C_HEAD}${SEP}${C_RESET}"
+
+while true; do
+  printf "${C_PROMPT}Select video number to convert (1-%d):${C_RESET} " "${#files[@]}"
+  read -r pick
+  if [[ "$pick" =~ ^[1-9][0-9]*$ ]] && [[ "$pick" -ge 1 && "$pick" -le ${#files[@]} ]]; then
+    src="${files[$((pick - 1))]}"
+    break
+  fi
+  echo "Please enter a number from 1 to ${#files[@]}"
+done
+picked "Selected: ${src#./}"
+
+s_idx=()
+s_type=()
+s_codec=()
+s_xfer=()
+s_extra=()
+s_meta=()
+
+while IFS='|' read -r idx codec_type codec_name w h ch lang title xfer; do
+  [[ -z "${idx:-}" ]] && continue
+  s_idx+=("$idx")
+  s_type+=("$codec_type")
+  s_codec+=("$codec_name")
+  s_xfer+=("$xfer")
+  extra=""
+  case "$codec_type" in
+    video) extra="${w}x${h}" ;;
+    audio) [[ -n "$ch" ]] && extra="${ch}ch" ;;
+  esac
+  s_extra+=("$extra")
+  meta=""
+  [[ -n "$lang" ]] && meta="$lang"
+  if [[ -n "$title" ]]; then
+    if [[ -n "$meta" ]]; then
+      meta="$meta · $title"
+    else
+      meta="$title"
+    fi
+  fi
+  s_meta+=("$meta")
+done < <(
+  ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height,channels,color_transfer:stream_tags=language,title -of json "$src" \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for s in d.get("streams") or []:
+    tags = s.get("tags") or {}
+    title = (tags.get("title") or "").replace("|", "/")
+    print("|".join([
+        str(s.get("index", "")),
+        s.get("codec_type") or "",
+        s.get("codec_name") or "",
+        "" if s.get("width") in (None, "N/A") else str(s.get("width")),
+        "" if s.get("height") in (None, "N/A") else str(s.get("height")),
+        "" if s.get("channels") in (None, "N/A") else str(s.get("channels")),
+        tags.get("language") or "",
+        title,
+        s.get("color_transfer") or "",
+    ]))
+'
+)
+
+banner "Available streams:"
+n=${#s_idx[@]}
+for j in "${!s_idx[@]}"; do
+  num=$((j + 1))
+  color="$C_OTHER"
+  case "${s_type[$j]}" in
+    video) color="$C_VIDEO" ;;
+    audio) color="$C_AUDIO" ;;
+    subtitle) color="$C_SUB" ;;
+  esac
+  line=$(printf "%2d. 0:%s:  %s  %s" "$num" "${s_idx[$j]}" "${s_type[$j]}" "${s_codec[$j]}")
+  [[ -n "${s_extra[$j]}" ]] && line+="  ${s_extra[$j]}"
+  [[ -n "${s_meta[$j]}" ]] && line+="  ${s_meta[$j]}"
+  printf "${color}%s${C_RESET}\n" "$line"
+done
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}Tip: type menu numbers separated by spaces, then Enter.${C_RESET}"
+echo "${C_MUTED}Example: 1 2 7  → video #1, audio #2, subtitle #7${C_RESET}"
+echo "${C_MUTED}Need exactly 1 video and at least 1 audio.${C_RESET}"
+echo "${C_MUTED}Profile is fixed for LG C2 (OLED65C24LA): 1080p HEVC + AAC stereo + MKV.${C_RESET}"
+
+streamTypeByMenu() {
+  local menu=$1
+  local j=$((menu - 1))
+  if [[ "$menu" -lt 1 || "$menu" -gt ${#s_idx[@]} ]]; then
+    return 1
+  fi
+  echo "${s_type[$j]}"
+}
+
+streamIdxByMenu() {
+  local menu=$1
+  local j=$((menu - 1))
+  echo "${s_idx[$j]}"
+}
+
+streamCodecByIdx() {
+  local id=$1
+  local j
+  for j in "${!s_idx[@]}"; do
+    if [[ "${s_idx[$j]}" == "$id" ]]; then
+      echo "${s_codec[$j]}"
+      return 0
+    fi
+  done
+  echo ""
+}
+
+isImageSub() {
+  case "$1" in
+    hdmv_pgs_subtitle|dvd_subtitle|dvb_subtitle|xsub) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+while true; do
+  printf "${C_PROMPT}Stream numbers (space-separated):${C_RESET} "
+  read -r sel
+  sel_menus=($sel)
+  vcount=0
+  acount=0
+  ok=1
+  sel_video=()
+  sel_audio=()
+  sel_sub=()
+  sel_menus_ok=()
+  for m in "${sel_menus[@]}"; do
+    if [[ ! "$m" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Bad number: $m"
+      ok=0
+      break
+    fi
+    t=$(streamTypeByMenu "$m" || true)
+    if [[ -z "$t" ]]; then
+      echo "Bad number: $m (valid: 1-$n)"
+      ok=0
+      break
+    fi
+    id=$(streamIdxByMenu "$m")
+    case "$t" in
+      video) sel_video+=("$id"); vcount=$((vcount + 1)) ;;
+      audio) sel_audio+=("$id"); acount=$((acount + 1)) ;;
+      subtitle) sel_sub+=("$id") ;;
+      *) echo "Unsupported type $t"; ok=0; break ;;
+    esac
+    sel_menus_ok+=("$m")
+  done
+  [[ "$ok" -eq 0 ]] && continue
+  if [[ "$vcount" -ne 1 ]]; then
+    echo "Need exactly 1 video stream (got $vcount)"
+    continue
+  fi
+  if [[ "$acount" -lt 1 ]]; then
+    echo "Need at least 1 audio stream"
+    continue
+  fi
+  break
+done
+echo "${C_MUTED}Chosen numbers: ${sel_menus_ok[*]}${C_RESET}"
+picked "Selected streams: ${sel_menus_ok[*]}"
+
+color_tr=""
+for j in "${!s_idx[@]}"; do
+  if [[ "${s_idx[$j]}" == "${sel_video[0]}" ]]; then
+    color_tr="${s_xfer[$j]}"
+    break
+  fi
+done
+hdr=0
+case "${color_tr}" in
+  smpte2084|arib-std-b67) hdr=1 ;;
+esac
+if [[ "$hdr" -eq 1 ]]; then
+  picked "HDR detected → tone-map to SDR"
+else
+  picked "Video: SDR (or unspecified)"
+fi
+
+banner "Select conversion mode:"
+echo "1. Whole file (default)"
+echo "2. First N minutes only"
+echo "${C_MUTED}How to use mode 2:${C_RESET}"
+echo "${C_MUTED}  1) type 2 and press Enter${C_RESET}"
+echo "${C_MUTED}  2) type minutes as a whole number (example: 5) and press Enter${C_RESET}"
+echo "${C_MUTED}  Do not type decimals. Example for one minute: 1${C_RESET}"
+echo "${C_HEAD}${SEP}${C_RESET}"
+printf "${C_PROMPT}Your choice (1-2) [1]:${C_RESET} "
+read -r mchoice
+mchoice=${mchoice:-1}
+minutes=0
+case "$mchoice" in
+  1) picked "Mode: whole file" ;;
+  2)
+    while true; do
+      printf "${C_PROMPT}Minutes (whole number, e.g. 5):${C_RESET} "
+      read -r minutes
+      if [[ "$minutes" =~ ^[1-9][0-9]*$ ]]; then
+        break
+      fi
+      echo "Enter a whole number >= 1 (example: 5)"
+    done
+    picked "Mode: first ${minutes} minute(s)"
+    ;;
+  *) echo "Bad mode choice"; exit 1 ;;
+esac
+
+base=$(basename "$src")
+base="${base%.*}"
+out_suffix="_lgc2"
+if [[ "$minutes" -gt 0 ]]; then
+  out_suffix="${out_suffix}_first${minutes}m"
+fi
+out="./${base}${out_suffix}.mkv"
+
+subs_show="(none)"
+if [[ ${#sel_sub[@]} -gt 0 ]]; then
+  subs_show="${sel_sub[*]}"
+fi
+
+vf="scale=${OUT_W}:-2"
+if [[ "$hdr" -eq 1 ]]; then
+  vf="zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=${OUT_W}:-2"
+fi
+
+banner "Summary:"
+echo "  input     $(basename "$src")"
+echo "  output    ${out#./}"
+echo "  target    LG OLED65C24LA (C2 USB)"
+echo "  video map ${sel_video[*]}"
+echo "  audio map ${sel_audio[*]}"
+echo "  subs map  $subs_show"
+echo "  size      ${OUT_W}px wide (1080p), CRF ${CRF}, x265 ${PRESET}"
+if [[ "$hdr" -eq 1 ]]; then
+  echo "  hdr       tone-map → SDR"
+else
+  echo "  hdr       no"
+fi
+if [[ "$minutes" -gt 0 ]]; then
+  echo "  duration  first ${minutes} min"
+else
+  echo "  duration  whole file"
+fi
+echo "  encode    HEVC + AAC stereo ${AUDIO_BR} + MKV"
+if [[ ${#sel_sub[@]} -gt 0 ]]; then
+  echo "  subs-enc  SRT (PGS/DVD copied)"
+fi
+echo "${C_HEAD}${SEP}${C_RESET}"
+printf "${C_PROMPT}Start conversion? [Y/n]:${C_RESET} "
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+map_args=()
+for id in "${sel_video[@]}" "${sel_audio[@]}"; do
+  map_args+=(-map "0:$id")
+done
+if [[ ${#sel_sub[@]} -gt 0 ]]; then
+  for id in "${sel_sub[@]}"; do
+    map_args+=(-map "0:$id")
+  done
+fi
+
+cmd=(ffmpeg -hide_banner -y -i "$src")
+if [[ "$minutes" -gt 0 ]]; then
+  cmd+=(-t $((minutes * 60)))
+fi
+cmd+=("${map_args[@]}")
+cmd+=(-vf "$vf")
+cmd+=(-c:v libx265 -crf "$CRF" -preset "$PRESET" -pix_fmt yuv420p)
+cmd+=(-c:a aac -ac 2 -b:a "$AUDIO_BR")
+
+if [[ ${#sel_sub[@]} -gt 0 ]]; then
+  si=0
+  for id in "${sel_sub[@]}"; do
+    sc=$(streamCodecByIdx "$id")
+    if isImageSub "$sc"; then
+      cmd+=(-c:s:$si copy)
+    else
+      cmd+=(-c:s:$si srt)
+    fi
+    si=$((si + 1))
+  done
+  cmd+=(-disposition:s:0 default)
+fi
+cmd+=(-disposition:a:0 default)
+cmd+=("$out")
+
+"${cmd[@]}"
+
+xattr -c "$out" 2>/dev/null || true
+
+picked "Done: ${out#./}"
