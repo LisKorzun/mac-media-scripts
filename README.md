@@ -60,8 +60,8 @@ Example with `[to-mp4](specs/to-mp4.txt)` (manual H.264), `[to-apple](specs/to-a
 ```bash
 cd ~/DEV/scripts/inprogress
 to-mp4      # macOS mp4, pick width/CRF
-to-apple    # MacBook / iMac / iPhone
-to-lg-tv    # LG C2 USB mkv
+to-apple    # MacBook / iMac / iPhone (one or more files: 1 3 5)
+to-lg-tv    # LG C2 USB mkv (queue supported too)
 ```
 
 Use any folder that contains your video — `inprogress/` is optional.

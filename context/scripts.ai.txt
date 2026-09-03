@@ -11,7 +11,7 @@ Bash-скрипты для медиа на macOS. Сюда только инст
 | Путь          | Зачем                                              |
 | ------------- | -------------------------------------------------- |
 | `bin/`        | запускаемые скрипты (kebab-case: `to-mp4`, …)      |
-| `lib/`        | общие куски shell, если появятся                   |
+| `lib/`        | общий код shell (`fixed-profile-queue.sh` для to-apple / to-lg-tv) |
 | `inprogress/` | временные медиа; после работы очищать              |
 | `specs/`      | ТЗ: `specs/<script-name>.txt`                      |
 | `context/`    | `scripts.ai.txt`                                   |
