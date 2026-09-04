@@ -260,9 +260,12 @@ encode_one() {
   for id in "${vids[@]}" "${auds[@]}"; do
     map_args+=(-map "0:$id")
   done
-  for id in "${subs[@]}"; do
-    map_args+=(-map "0:$id")
-  done
+  # bash 3.2 + set -u: empty "${subs[@]}" is an unbound-variable error
+  if ((${#subs[@]} > 0)); then
+    for id in "${subs[@]}"; do
+      map_args+=(-map "0:$id")
+    done
+  fi
 
   vf="scale=${OUT_W}:-2"
   if [[ "$hdr" -eq 1 ]]; then
@@ -482,6 +485,11 @@ run_fixed_profile_queue() {
     y|Y|"") ;;
     *) echo "Cancelled"; exit 0 ;;
   esac
+
+  if command -v caffeinate >/dev/null 2>&1; then
+    caffeinate -is -w $$ >/dev/null 2>&1 &
+    picked "Keeping Mac awake until this script finishes (caffeinate -is)"
+  fi
 
   for qi in "${!queue_src[@]}"; do
     banner "Converting [$((qi + 1))/$total]: $(basename "${queue_src[$qi]}")"
