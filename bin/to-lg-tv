@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Convert video(s) in the current folder for LG OLED65C24LA (C2, USB player).
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_VIDEO=$'\033[38;5;109m'
+C_AUDIO=$'\033[38;5;111m'
+C_SUB=$'\033[38;5;182m'
+C_OTHER=$'\033[38;5;246m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+OUT_W=1920
+CRF=22
+PRESET=fast
+AUDIO_BR=160k
+OUT_SUFFIX="_lgc2"
+OUT_EXT="mkv"
+TARGET_LABEL="LG OLED65C24LA (C2 USB)"
+REJECT_IMAGE_SUBS=0
+STREAM_HINT="Profile is fixed for LG C2 (OLED65C24LA): 1080p HEVC + AAC stereo + MKV."
+ENCODE_SUMMARY_LINE="HEVC + AAC stereo ${AUDIO_BR} + MKV"
+ENCODE_SUBS_LINE="SRT (PGS/DVD copied)"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/fixed-profile-queue.sh
+source "$SCRIPT_DIR/../lib/fixed-profile-queue.sh"
+run_fixed_profile_queue

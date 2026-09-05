@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Convert video(s) in the current folder for MacBook, iMac M1, iPhone 14 Pro Max.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_VIDEO=$'\033[38;5;109m'
+C_AUDIO=$'\033[38;5;111m'
+C_SUB=$'\033[38;5;182m'
+C_OTHER=$'\033[38;5;246m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+OUT_W=1920
+CRF=24
+PRESET=medium
+AUDIO_BR=160k
+OUT_SUFFIX="_apple"
+OUT_EXT="mp4"
+TARGET_LABEL="MacBook / iMac M1 / iPhone 14 Pro Max"
+REJECT_IMAGE_SUBS=1
+STREAM_HINT="Text subtitles only (no PGS/DVD). Profile: 1080p HEVC + AAC + MP4 for Mac/iPhone."
+ENCODE_SUMMARY_LINE="HEVC (hvc1) + AAC stereo ${AUDIO_BR} + MP4"
+ENCODE_SUBS_LINE="mov_text"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../lib/fixed-profile-queue.sh
+source "$SCRIPT_DIR/../lib/fixed-profile-queue.sh"
+run_fixed_profile_queue
