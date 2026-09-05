@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Launch VLESSClient in the background (nohup).
+set -euo pipefail
+
+APP_DIR="${VLESS_DIR:-$HOME/DEV/VLESSClient}"
+BIN="$APP_DIR/.build/release/VLESSClient"
+
+usage() {
+  echo "usage: run-vless"
+  echo "  start VLESSClient via nohup from $APP_DIR"
+  exit 1
+}
+
+[[ $# -eq 0 ]] || usage
+
+[[ -x "$BIN" ]] || {
+  echo "missing or not executable: $BIN"
+  echo "build release in $APP_DIR first"
+  exit 1
+}
+
+cd "$APP_DIR"
+nohup .build/release/VLESSClient >/dev/null 2>&1 &
+echo "started VLESSClient (pid $!)"
