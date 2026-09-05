@@ -1,0 +1,20 @@
+ТЗ — run-vless
+
+Назначение
+  Запустить VLESSClient в фоне (nohup), не привязывая к терминалу.
+
+Скрипт
+  bin/run-vless
+  bash
+
+Приложение
+  По умолчанию: ~/DEV/VLESSClient/.build/release/VLESSClient
+  Переопределить корень: env VLESS_DIR=/path/to/VLESSClient
+
+Поведение
+  cd в каталог приложения → nohup .build/release/VLESSClient &
+  stdout/stderr в /dev/null (без nohup.out в репо приложения)
+  Если бинаря нет — сообщение и exit 1 (сначала собрать release)
+
+Запуск
+  run-vless

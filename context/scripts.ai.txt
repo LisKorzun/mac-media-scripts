@@ -1,6 +1,6 @@
 # AI context — mac-media-scripts
 Репозиторий: /Users/lis/DEV/scripts → https://github.com/LisKorzun/mac-media-scripts
-Читай этот файл перед правками. Для людей: [[README.md]]. ТЗ: [[specs/to-mp4.txt]], [[specs/cut-mp4.txt]], [[specs/tailwind-clr.txt]].
+Читай этот файл перед правками. Для людей: [[README.md]]. ТЗ: [[specs/to-mp4.txt]], [[specs/cut-mp4.txt]], [[specs/tailwind-clr.txt]], [[specs/run-vless.txt]].
 
 ## Зачем
 Bash-скрипты для медиа на macOS. Сюда только инструменты; готовые файлы — в библиотеки владельца.
@@ -22,6 +22,7 @@ Bash-скрипты для медиа на macOS. Сюда только инст
 Скрипт смотрит только **текущую папку Терминала**; выход рядом с исходником → готовое в библиотеку → `inprogress/` очистить при необходимости.
 `to-mp4` — конвертация (mkv/… → mp4). `cut-mp4` — вырезка из **уже готового** mp4 (stream copy).
 `tailwind-clr` — палитра Tailwind → `inprogress/tailwind.clr` (проверить → перенести); `--install` в `~/Library/Colors`.
+`run-vless` — `nohup` запуск `~/DEV/VLESSClient/.build/release/VLESSClient`.
 Без PATH: относительный путь к `bin/to-mp4` или копия скрипта в рабочую папку (удалить после).
 Сессии-подпапки в `inprogress/` — позже, если понадобится.
 
@@ -54,6 +55,7 @@ Bash-скрипты для медиа на macOS. Сюда только инст
 3. ~~`bin/cut-mp4` — вырезка из готового mp4 (copy).~~ есть [[specs/cut-mp4.txt]]
 4. Позже по запросу: вырезка из оригинала с encode / from–to в to-mp4
 5. ~~`bin/tailwind-clr` — Tailwind colors → `.clr`.~~ есть [[specs/tailwind-clr.txt]]
+6. ~~`bin/run-vless` — фоновый запуск VLESSClient.~~ есть [[specs/run-vless.txt]]
 
 Не начинать скрипт без явного «пиши» / рабочей сессии; правки ТЗ — в `specs/`.
 
