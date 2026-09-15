@@ -89,6 +89,82 @@ askTime() {
   done
 }
 
+# Empty Enter → 0; otherwise same as askTime.
+askTimeOrZero() {
+  local prompt=$1
+  local val sec
+  while true; do
+    printf "${C_PROMPT}%s${C_RESET} " "$prompt" >&2
+    read -r val
+    if [[ -z "$val" ]]; then
+      echo "0"
+      return 0
+    fi
+    if sec=$(parseTime "$val" 2>/dev/null); then
+      echo "$sec"
+      return 0
+    fi
+    echo "Bad time. Use seconds (90), m:ss (1:30), h:mm:ss — or Enter for 0" >&2
+  done
+}
+
+pyOk() {
+  python3 -c "print(1 if ($1) else 0)"
+}
+
+# Keep only SRT cues that start before clip length; clamp ends.
+filterSrt() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import re, sys
+src_path, dst_path, len_s = sys.argv[1], sys.argv[2], sys.argv[3]
+limit = float(len_s)
+text = open(src_path, encoding="utf-8", errors="replace").read().strip()
+if not text:
+    open(dst_path, "w", encoding="utf-8").write("")
+    raise SystemExit(0)
+
+def parse_ts(s):
+    h, m, rest = s.split(":")
+    sec, ms = rest.split(",")
+    return int(h) * 3600 + int(m) * 60 + int(sec) + int(ms) / 1000.0
+
+def fmt_ts(t):
+    t = max(0.0, t)
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t - h * 3600 - m * 60
+    whole = int(s)
+    ms = int(round((s - whole) * 1000))
+    if ms == 1000:
+        whole += 1
+        ms = 0
+    return "%02d:%02d:%02d,%03d" % (h, m, whole, ms)
+
+blocks = re.split(r"\n\s*\n", text)
+out = []
+n = 0
+for block in blocks:
+    lines = block.strip().splitlines()
+    if len(lines) < 2:
+        continue
+    idx = 1 if re.match(r"^\d+$", lines[0]) else 0
+    if idx >= len(lines) or "-->" not in lines[idx]:
+        continue
+    left, right = [x.strip() for x in lines[idx].split("-->")]
+    start_t, end_t = parse_ts(left), parse_ts(right)
+    if start_t >= limit:
+        continue
+    if end_t > limit:
+        end_t = limit
+    if end_t <= start_t:
+        continue
+    n += 1
+    body = "\n".join(lines[idx + 1 :])
+    out.append("%d\n%s --> %s\n%s" % (n, fmt_ts(start_t), fmt_ts(end_t), body))
+open(dst_path, "w", encoding="utf-8").write("\n\n".join(out) + ("\n" if out else ""))
+PY
+}
+
 files=()
 while IFS= read -r -d '' f; do
   files+=("$f")
@@ -126,26 +202,9 @@ picked "Selected: ${src#./}"
 
 dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$src")
 dur_h=$(fmtTime "$dur")
-echo "${C_MUTED}Duration: ${dur_h}${C_RESET}"
-
-askTimeOrZero() {
-  # Empty Enter → 0; otherwise same as askTime.
-  local prompt=$1
-  local val sec
-  while true; do
-    printf "${C_PROMPT}%s${C_RESET} " "$prompt" >&2
-    read -r val
-    if [[ -z "$val" ]]; then
-      echo "0"
-      return 0
-    fi
-    if sec=$(parseTime "$val" 2>/dev/null); then
-      echo "$sec"
-      return 0
-    fi
-    echo "Bad time. Use seconds (90), m:ss (1:30), h:mm:ss — or Enter for 0" >&2
-  done
-}
+n_aud=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" | grep -c . || true)
+n_sub=$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" | grep -c . || true)
+echo "${C_MUTED}Duration: ${dur_h}  ·  audio tracks: ${n_aud}  ·  softsubs: ${n_sub}${C_RESET}"
 
 banner "Cut mode:"
 echo "1. Enter start, then end time (default)"
@@ -154,7 +213,8 @@ echo "3. Keep last … of the file"
 echo "4. Drop from start and/or end"
 echo "${C_MUTED}    e.g. skip intro/ads at the head, strip long credits at the tail${C_RESET}"
 echo "${C_MUTED}Tip: times as 90  or  1:30  or  0:01:30${C_RESET}"
-echo "${C_MUTED}Copy may snap to a nearby keyframe (a short shift is normal).${C_RESET}"
+echo "${C_MUTED}Copy: start is exact; video may be black until the next keyframe (audio is fine).${C_RESET}"
+echo "${C_MUTED}Keeps all audio + softsubs (subs rebuilt so the tail does not freeze).${C_RESET}"
 echo "${C_HEAD}${SEP}${C_RESET}"
 printf "${C_PROMPT}Your choice (1-4) [1]:${C_RESET} "
 read -r mode
@@ -171,32 +231,22 @@ case "$mode" in
   1)
     while true; do
       start_sec=$(askTime "Start time:")
-      ok=$(python3 -c "print(1 if 0 <= float('$start_sec') < float('$dur') else 0)")
-      if [[ "$ok" == "1" ]]; then
-        break
-      fi
+      [[ "$(pyOk "0 <= float('$start_sec') < float('$dur')")" == "1" ]] && break
       echo "Start must be >= 0 and < file duration ($dur_h)" >&2
     done
     picked "Start: $(fmtTime "$start_sec")"
     while true; do
       end_sec=$(askTime "End time:")
-      ok=$(python3 -c "print(1 if float('$start_sec') < float('$end_sec') <= float('$dur') else 0)")
-      if [[ "$ok" == "1" ]]; then
-        break
-      fi
+      [[ "$(pyOk "float('$start_sec') < float('$end_sec') <= float('$dur')")" == "1" ]] && break
       echo "End must be > start and <= file duration ($dur_h)" >&2
     done
-    len_sec=$(python3 -c "print(float('$end_sec') - float('$start_sec'))")
     mode_label="start → end"
     picked "End: $(fmtTime "$end_sec")"
     ;;
   2)
     while true; do
       len_sec=$(askTime "Keep first how long:")
-      ok=$(python3 -c "print(1 if 0 < float('$len_sec') <= float('$dur') else 0)")
-      if [[ "$ok" == "1" ]]; then
-        break
-      fi
+      [[ "$(pyOk "0 < float('$len_sec') <= float('$dur')")" == "1" ]] && break
       echo "Length must be > 0 and <= file duration ($dur_h)" >&2
     done
     start_sec=0
@@ -207,10 +257,7 @@ case "$mode" in
   3)
     while true; do
       len_sec=$(askTime "Keep last how long:")
-      ok=$(python3 -c "print(1 if 0 < float('$len_sec') <= float('$dur') else 0)")
-      if [[ "$ok" == "1" ]]; then
-        break
-      fi
+      [[ "$(pyOk "0 < float('$len_sec') <= float('$dur')")" == "1" ]] && break
       echo "Length must be > 0 and <= file duration ($dur_h)" >&2
     done
     start_sec=$(python3 -c "print(float('$dur') - float('$len_sec'))")
@@ -223,13 +270,7 @@ case "$mode" in
     while true; do
       drop_head=$(askTimeOrZero "Drop from start [0]:")
       drop_tail=$(askTimeOrZero "Drop from end [0]:")
-      ok=$(python3 -c "
-h, t, d = float('$drop_head'), float('$drop_tail'), float('$dur')
-print(1 if h >= 0 and t >= 0 and (h > 0 or t > 0) and h + t < d else 0)
-")
-      if [[ "$ok" == "1" ]]; then
-        break
-      fi
+      [[ "$(pyOk "float('$drop_head') >= 0 and float('$drop_tail') >= 0 and (float('$drop_head') > 0 or float('$drop_tail') > 0) and float('$drop_head') + float('$drop_tail') < float('$dur')")" == "1" ]] && break
       echo "Need at least one side > 0, both >= 0, and something left in the middle (duration $dur_h)" >&2
     done
     start_sec=$drop_head
@@ -249,9 +290,9 @@ case "$mode" in
   2) tag="keepfirst_$(fmtTag "$len_sec")" ;;
   3) tag="keeplast_$(fmtTag "$len_sec")" ;;
   4)
-    if python3 -c "raise SystemExit(0 if float('$drop_head') > 0 and float('$drop_tail') > 0 else 1)"; then
+    if [[ "$(pyOk "float('$drop_head') > 0 and float('$drop_tail') > 0")" == "1" ]]; then
       tag="drop_$(fmtTag "$drop_head")_$(fmtTag "$drop_tail")"
-    elif python3 -c "raise SystemExit(0 if float('$drop_head') > 0 else 1)"; then
+    elif [[ "$(pyOk "float('$drop_head') > 0")" == "1" ]]; then
       tag="drop_$(fmtTag "$drop_head")_head"
     else
       tag="drop_$(fmtTag "$drop_tail")_end"
@@ -270,7 +311,8 @@ fi
 echo "  start     $(fmtTime "$start_sec")"
 echo "  end       $(fmtTime "$end_sec")"
 echo "  length    $(fmtTime "$len_sec")"
-echo "  encode    stream copy (no re-encode)"
+echo "  tracks    audio ${n_aud} · softsubs ${n_sub} (rebuilt)"
+echo "  encode    stream copy · chapters dropped"
 echo "${C_HEAD}${SEP}${C_RESET}"
 printf "${C_PROMPT}Start cut? [Y/n]:${C_RESET} "
 read -r conf
@@ -280,19 +322,70 @@ case "$conf" in
   *) echo "Cancelled"; exit 0 ;;
 esac
 
-# -ss after -i + make_zero: reset timeline to 0 (avoids long black screen)
-# map 0:V = video without attached covers; skip data tracks
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# 1) Video + all audio (exact -ss after -i)
 ffmpeg -hide_banner -y -i "$src" \
   -ss "$start_sec" -t "$len_sec" \
-  -map '0:V' -map '0:a?' -map '0:s?' \
+  -map '0:V' -map '0:a?' \
+  -map_chapters -1 \
   -c copy \
   -avoid_negative_ts make_zero \
   -fflags +genpts \
   -movflags +faststart \
-  "$out"
+  "$tmp/av.mp4"
+
+# 2) Each softsub → SRT (ss before -i) → clamp to length → mux as mov_text
+ff_cmd=(ffmpeg -hide_banner -y -i "$tmp/av.mp4")
+ff_map=(-map 0:V -map 0:a)
+ff_meta=()
+out_si=0
+sub_i=0
+while IFS= read -r _; do
+  raw="$tmp/sub_${sub_i}.raw.srt"
+  filt="$tmp/sub_${sub_i}.srt"
+  lang=$(ffprobe -v error -select_streams "s:${sub_i}" -show_entries stream_tags=language -of default=nw=1:nk=1 "$src" 2>/dev/null || true)
+  title=$(ffprobe -v error -select_streams "s:${sub_i}" -show_entries stream_tags=title -of default=nw=1:nk=1 "$src" 2>/dev/null || true)
+  if ! ffmpeg -hide_banner -y -ss "$start_sec" -t "$len_sec" -i "$src" \
+      -map "0:s:${sub_i}" -f srt "$raw" 2>/dev/null; then
+    echo "${C_MUTED}skip subtitle #$((sub_i + 1)) (could not extract)${C_RESET}"
+    sub_i=$((sub_i + 1))
+    continue
+  fi
+  filterSrt "$raw" "$filt" "$len_sec"
+  if [[ ! -s "$filt" ]]; then
+    sub_i=$((sub_i + 1))
+    continue
+  fi
+  in_idx=$((out_si + 1))
+  ff_cmd+=(-i "$filt")
+  ff_map+=(-map "${in_idx}:0")
+  if [[ -n "$lang" ]]; then
+    ff_meta+=(-metadata:s:s:${out_si} language="$lang")
+  fi
+  if [[ -n "$title" ]]; then
+    ff_meta+=(-metadata:s:s:${out_si} title="$title")
+  fi
+  out_si=$((out_si + 1))
+  sub_i=$((sub_i + 1))
+done < <(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src")
+
+if [[ "$out_si" -eq 0 ]]; then
+  mv -f "$tmp/av.mp4" "$out"
+else
+  ff_cmd+=("${ff_map[@]}" "${ff_meta[@]}"
+    -c:v copy -c:a copy -c:s mov_text
+    -map_chapters -1
+    -movflags +faststart
+    "$out")
+  "${ff_cmd[@]}"
+fi
 
 xattr -c "$out" 2>/dev/null || true
 
 out_dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$out" 2>/dev/null || echo "?")
+out_a=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$out" | grep -c . || true)
+out_s=$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$out" | grep -c . || true)
 picked "Done: ${out#./}"
-echo "${C_MUTED}Output duration: $(fmtTime "$out_dur")${C_RESET}"
+echo "${C_MUTED}Output duration: $(fmtTime "$out_dur")  ·  audio ${out_a} · softsubs ${out_s}${C_RESET}"
