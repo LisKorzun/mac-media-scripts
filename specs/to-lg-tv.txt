@@ -37,8 +37,8 @@
   Контейнер: Matroska (.mkv) — несколько аудио + soft-subs на C2 стабильнее, чем mp4.
   Видео: HEVC libx265, ширина 1920 (высота чётная, пропорции), CRF 22, preset fast, yuv420p.
     1080p HEVC — компромисс размер/картинка на 65" с дивана; 4K раздувает файл без нужды для USB.
-  HDR (smpte2084 / HLG): tone-map в SDR, иначе картинка «серая».
-    Основной путь: zscale; исключение без libzimg — tonemap=hable (только этот HDR).
+  HDR (smpte2084 / HLG): tone-map в SDR через zscale.
+    Без zscale: skip файла + совет (сразу и в конце очереди); без серого fallback.
   Аудио: AAC stereo 160k (C2 с USB не играет DTS / TrueHD — отсюда «нет звука»).
   Субтитры текстовые (srt/ass/ssa/webvtt/mov_text): в MKV как SRT.
   Субтитры картинкой (PGS / DVD / DVB): copy, без OCR.

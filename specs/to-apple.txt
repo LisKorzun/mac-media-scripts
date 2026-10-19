@@ -43,10 +43,9 @@
     1080p нужен iMac (to-mp4 default 854px — мелковато на 24"). CRF 24 + medium —
     между «супер» CRF 22 (~крупный файл) и 480p H.264. Не сравнивать размер с to-mp4
     default: там другое разрешение.
-  HDR (smpte2084 / HLG): tone-map в SDR (одинаково везде, меньше файл).
-    Основной путь: zscale (libzimg) — киношный, как раньше.
-    Исключение: если zscale нет в ffmpeg — одноразовый fallback tonemap=hable
-    (только для этого HDR-файла; SDR и машины с zscale не трогаем).
+  HDR (smpte2084 / HLG): tone-map в SDR через zscale (libzimg) — киношный путь.
+    Если zscale нет в ffmpeg: файл НЕ конвертируем; пишем совет сразу и снова
+    в конце очереди (скачать SDR, не HDR/DV). Без серого fallback.
     Ошибка ffmpeg ≠ «Done».
   Аудио: AAC stereo 160k (DTS/TrueHD на iPhone из файла часто молчат).
   Первая выбранная аудио и первая субтитр — default disposition.

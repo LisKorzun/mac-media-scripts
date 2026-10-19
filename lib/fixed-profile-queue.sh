@@ -207,7 +207,7 @@ video_hdr() {
   echo 0
 }
 
-# Prefer cinematic zscale (libzimg). Stock Homebrew ffmpeg often lacks it → rare fallback only.
+# Cinematic HDR→SDR needs zscale (libzimg). Without it we skip the file (no gray fallback).
 HAVE_ZSCALE=""
 have_zscale() {
   if [[ -z "$HAVE_ZSCALE" ]]; then
@@ -221,11 +221,26 @@ have_zscale() {
 }
 
 hdr_vf() {
-  if have_zscale; then
-    echo "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=${OUT_W}:-2"
-  else
-    echo "tonemap=tonemap=hable:desat=0,format=yuv420p,scale=${OUT_W}:-2"
-  fi
+  echo "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=${OUT_W}:-2"
+}
+
+# Same block is printed when skipping and again at queue end.
+print_hdr_skip_advice() {
+  local name=$1
+  echo
+  echo "${C_HEAD}── HDR skip: ${name}${C_RESET}"
+  echo "${C_MUTED}Проблема: файл в HDR (HDR10 / HLG). Для нормального tone-map в SDR${C_RESET}"
+  echo "${C_MUTED}нужен фильтр zscale (libzimg) в ffmpeg — в этой сборке его нет.${C_RESET}"
+  echo "${C_MUTED}Если всё же конвертировать «как есть» / грубым fallback:${C_RESET}"
+  echo "${C_MUTED}  → картинка серая, почти ничего не видно, конвертация долгая.${C_RESET}"
+  echo "${C_MUTED}Поэтому этот файл пропущен (не конвертируем).${C_RESET}"
+  echo "${C_MUTED}При скачивании — смотри на странице раздачи:${C_RESET}"
+  echo "${C_MUTED}  • заголовок / название торрента — лучше BDRip/WEB-DL 1080p без слов HDR${C_RESET}"
+  echo "${C_MUTED}  • блок «Файл» / «Видео» / «Кодек» — x264 или HEVC без пометки HDR${C_RESET}"
+  echo "${C_MUTED}  • ищи слово SDR в названии (если есть — отлично)${C_RESET}"
+  echo "${C_MUTED}Не бери, если в заголовке или рядом «похожие» с:${C_RESET}"
+  echo "${C_MUTED}  HDR / HDR10 / DV / Dolby Vision / UHD / 2160p / 4K HDR${C_RESET}"
+  echo
 }
 
 pick_mode() {
@@ -291,12 +306,7 @@ encode_one() {
   vf="scale=${OUT_W}:-2"
   if [[ "$hdr" -eq 1 ]]; then
     vf=$(hdr_vf)
-    if have_zscale; then
-      echo "${C_MUTED}HDR: cinematic zscale tone-map${C_RESET}"
-    else
-      echo "${C_MUTED}HDR exception: no zscale in this ffmpeg → temporary tonemap fallback (SDR/non-HDR unchanged).${C_RESET}"
-      echo "${C_MUTED}  For the old cinematic path: ffmpeg built with libzimg (zscale filter).${C_RESET}"
-    fi
+    echo "${C_MUTED}HDR: cinematic zscale tone-map${C_RESET}"
   fi
 
   cmd=(ffmpeg -hide_banner -y -i "$src")
@@ -349,6 +359,7 @@ run_fixed_profile_queue() {
   local files=()
   local f i pick pick_menus m src prev_menus conf
   local -a queue_src queue_out queue_hdr queue_video queue_audio queue_sub
+  local -a skipped_hdr=()
   local qi total failed=() done_n=0
   local base out_suffix out subs_show hdr
 
@@ -461,7 +472,13 @@ run_fixed_profile_queue() {
     prev_menus="${sel_menus_ok[*]}"
     hdr=$(video_hdr "${sel_video[0]}")
     if [[ "$hdr" -eq 1 ]]; then
-      picked "HDR detected → tone-map to SDR"
+      if have_zscale; then
+        picked "HDR detected → tone-map to SDR (zscale)"
+      else
+        print_hdr_skip_advice "$(basename "$src")"
+        skipped_hdr+=("$(basename "$src")")
+        continue
+      fi
     fi
 
     base=$(basename "$src")
@@ -484,8 +501,21 @@ run_fixed_profile_queue() {
     fi
   done
 
-  banner "Queue summary:"
   total=${#queue_src[@]}
+  if [[ "$total" -eq 0 ]]; then
+    banner "Queue finished:"
+    echo "  completed 0 / 0 (nothing to encode)"
+    if [[ ${#skipped_hdr[@]} -gt 0 ]]; then
+      banner "Skipped HDR (reminder):"
+      for f in "${skipped_hdr[@]}"; do
+        print_hdr_skip_advice "$f"
+      done
+      exit 1
+    fi
+    exit 0
+  fi
+
+  banner "Queue summary:"
   for qi in "${!queue_src[@]}"; do
     echo "  [$((qi + 1))/$total] $(basename "${queue_src[$qi]}")"
     echo "           → ${queue_out[$qi]#./}"
@@ -496,9 +526,12 @@ run_fixed_profile_queue() {
       echo "           subs  (none)"
     fi
     if [[ "${queue_hdr[$qi]}" -eq 1 ]]; then
-      echo "           hdr   tone-map → SDR"
+      echo "           hdr   tone-map → SDR (zscale)"
     fi
   done
+  if [[ ${#skipped_hdr[@]} -gt 0 ]]; then
+    echo "  skipped   ${#skipped_hdr[@]} HDR file(s) (no zscale) — see notes above / at the end"
+  fi
   echo "  target    $TARGET_LABEL"
   echo "  size      ${OUT_W}px wide (1080p), CRF ${CRF}, x265 ${PRESET}"
   if [[ "$minutes" -gt 0 ]]; then
@@ -548,6 +581,14 @@ run_fixed_profile_queue() {
     for f in "${failed[@]}"; do
       echo "    $f"
     done
+  fi
+  if [[ ${#skipped_hdr[@]} -gt 0 ]]; then
+    banner "Skipped HDR (reminder):"
+    for f in "${skipped_hdr[@]}"; do
+      print_hdr_skip_advice "$f"
+    done
+  fi
+  if [[ ${#failed[@]} -gt 0 || ${#skipped_hdr[@]} -gt 0 ]]; then
     exit 1
   fi
 }
