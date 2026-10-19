@@ -207,6 +207,27 @@ video_hdr() {
   echo 0
 }
 
+# Prefer cinematic zscale (libzimg). Stock Homebrew ffmpeg often lacks it → rare fallback only.
+HAVE_ZSCALE=""
+have_zscale() {
+  if [[ -z "$HAVE_ZSCALE" ]]; then
+    if ffmpeg -hide_banner -filters 2>/dev/null | grep -q '[[:space:]]zscale[[:space:]]'; then
+      HAVE_ZSCALE=1
+    else
+      HAVE_ZSCALE=0
+    fi
+  fi
+  [[ "$HAVE_ZSCALE" -eq 1 ]]
+}
+
+hdr_vf() {
+  if have_zscale; then
+    echo "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=${OUT_W}:-2"
+  else
+    echo "tonemap=tonemap=hable:desat=0,format=yuv420p,scale=${OUT_W}:-2"
+  fi
+}
+
 pick_mode() {
   banner "Select conversion mode:"
   echo "1. Whole file (default)"
@@ -269,7 +290,13 @@ encode_one() {
 
   vf="scale=${OUT_W}:-2"
   if [[ "$hdr" -eq 1 ]]; then
-    vf="zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,scale=${OUT_W}:-2"
+    vf=$(hdr_vf)
+    if have_zscale; then
+      echo "${C_MUTED}HDR: cinematic zscale tone-map${C_RESET}"
+    else
+      echo "${C_MUTED}HDR exception: no zscale in this ffmpeg → temporary tonemap fallback (SDR/non-HDR unchanged).${C_RESET}"
+      echo "${C_MUTED}  For the old cinematic path: ffmpeg built with libzimg (zscale filter).${C_RESET}"
+    fi
   fi
 
   cmd=(ffmpeg -hide_banner -y -i "$src")
@@ -308,8 +335,14 @@ encode_one() {
   fi
   cmd+=("$out")
 
-  "${cmd[@]}"
+  local rc=0
+  "${cmd[@]}" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$out"
+    return "$rc"
+  fi
   xattr -c "$out" 2>/dev/null || true
+  return 0
 }
 
 run_fixed_profile_queue() {
