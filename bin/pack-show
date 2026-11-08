@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Flatten season folders into one folder: "01. Title.ext" → "S01E01 · Title.ext".
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+C_WARN=$'\033[38;5;215m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }
+}
+
+need python3
+
+plan_show() {
+  python3 - "$1" <<'PY'
+import os, re, sys
+show = sys.argv[1]
+exts = {".mkv", ".mp4", ".mov", ".m4v", ".avi", ".webm", ".ts", ".m2ts"}
+season_re = re.compile(r"^(?:season|сезон|s)[ ._-]*(\d+)(?!\d)", re.I)
+ep_re = re.compile(r"^(\d+)\.\s*(.+)$")
+rows = []
+skipped = []
+for name in sorted(os.listdir(show)):
+    if name.startswith("."):
+        continue
+    path = os.path.join(show, name)
+    if not os.path.isdir(path):
+        continue
+    sm = season_re.match(name)
+    if not sm:
+        continue
+    season = int(sm.group(1))
+    for fn in sorted(os.listdir(path)):
+        if fn.startswith("."):
+            continue
+        src = os.path.join(path, fn)
+        if not os.path.isfile(src):
+            continue
+        ext = os.path.splitext(fn)[1].lower()
+        if ext not in exts:
+            skipped.append(src)
+            continue
+        em = ep_re.match(fn)
+        if not em:
+            skipped.append(src)
+            continue
+        episode = int(em.group(1))
+        rest = em.group(2)
+        dest = "S%02dE%02d · %s" % (season, episode, rest)
+        rows.append((season, episode, src, dest))
+rows.sort()
+seen = {}
+for season, episode, src, dest in rows:
+    flag = "ok"
+    if dest in seen:
+        flag = "dup"
+    seen[dest] = src
+    sys.stdout.write("%s\t%d\t%d\t%s\t%s\n" % (flag, season, episode, src, dest))
+for src in skipped:
+    sys.stderr.write("skip\t%s\n" % src)
+if not rows:
+    raise SystemExit(2)
+PY
+}
+
+here=$(pwd)
+show=""
+if plan_show "$here" >/dev/null 2>/dev/null; then
+  show="$here"
+else
+  dirs=()
+  while IFS= read -r -d '' d; do
+    dirs+=("$d")
+  done < <(find . -maxdepth 1 -mindepth 1 -type d ! -name '.*' -print0 | sort -z)
+  picks=()
+  for d in "${dirs[@]+"${dirs[@]}"}"; do
+    if plan_show "$d" >/dev/null 2>/dev/null; then
+      picks+=("$d")
+    fi
+  done
+  if [[ ${#picks[@]} -eq 0 ]]; then
+    echo "No season folders here."
+    echo "cd into the show folder (s01, s02, … inside) or into its parent, then run pack-show."
+    exit 1
+  fi
+  banner "Shows with season folders:"
+  i=1
+  for d in "${picks[@]}"; do
+    printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${d#./}"
+    i=$((i + 1))
+  done
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  while true; do
+    printf "${C_PROMPT}Select show (1-%d):${C_RESET} " "${#picks[@]}"
+    read -r pick
+    if [[ "$pick" =~ ^[1-9][0-9]*$ ]] && [[ "$pick" -ge 1 && "$pick" -le ${#picks[@]} ]]; then
+      show="${picks[$((pick - 1))]}"
+      break
+    fi
+    echo "Please enter a number from 1 to ${#picks[@]}"
+  done
+fi
+picked "Show: ${show#./}"
+
+plan=$(mktemp)
+skips=$(mktemp)
+trap 'rm -f "$plan" "$skips"' EXIT
+set +e
+plan_show "$show" >"$plan" 2>"$skips"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]]; then
+  echo "No episodes matched (need folders like s01 and files like 01. Title.mkv)."
+  exit 1
+fi
+
+parent=$(cd "$show/.." && pwd)
+base=$(basename "$show")
+default="${base} all"
+
+banner "Preview:"
+n=0
+dups=0
+while IFS=$'\t' read -r flag season episode src dest; do
+  [[ -z "${flag:-}" ]] && continue
+  n=$((n + 1))
+  rel=${src#"$show"/}
+  if [[ "$flag" == "dup" ]]; then
+    dups=$((dups + 1))
+    printf "${C_WARN}%s${C_RESET}\n" "  $rel  →  $dest  (duplicate, will skip)"
+  else
+    printf "  %s\n" "$rel  →  $dest"
+  fi
+done <"$plan"
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}Episodes: $n. Leading \"NN. \" is replaced with SxxExx · ${C_RESET}"
+skip_n=0
+if [[ -s "$skips" ]]; then
+  while IFS=$'\t' read -r tag path; do
+    [[ "$tag" == "skip" ]] || continue
+    skip_n=$((skip_n + 1))
+    echo "${C_WARN}skip  ${path#"$show"/}${C_RESET}"
+  done <"$skips"
+fi
+if [[ "$dups" -gt 0 ]]; then
+  echo "${C_WARN}$dups duplicate name(s) will be left in place.${C_RESET}"
+fi
+
+banner "Output folder"
+echo "${C_MUTED}Created next to the show folder:${C_RESET}"
+echo "${C_MUTED}  ${parent}/${C_RESET}"
+echo "${C_MUTED}Files are moved, not copied. Empty season folders stay.${C_RESET}"
+echo "${C_HEAD}${SEP}${C_RESET}"
+printf "${C_PROMPT}Folder name [%s]:${C_RESET} " "$default"
+read -r out_name
+out_name=${out_name:-$default}
+if [[ "$out_name" == *"/"* || "$out_name" == "." || "$out_name" == ".." || -z "$out_name" ]]; then
+  echo "Bad folder name"
+  exit 1
+fi
+dest_dir="${parent}/${out_name}"
+if [[ "$dest_dir" == "$show" || "$dest_dir" == "$(cd "$show" && pwd)" ]]; then
+  echo "Output folder must be different from the show folder"
+  exit 1
+fi
+picked "Output: ${dest_dir}"
+
+printf "${C_PROMPT}Move %d file(s)? [Y/n]:${C_RESET} " "$n"
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+mkdir -p "$dest_dir"
+moved=0
+left=0
+while IFS=$'\t' read -r flag season episode src dest; do
+  [[ -z "${flag:-}" ]] && continue
+  if [[ "$flag" == "dup" ]]; then
+    left=$((left + 1))
+    continue
+  fi
+  target="${dest_dir}/${dest}"
+  if [[ -e "$target" ]]; then
+    echo "${C_WARN}exists, skip: $dest${C_RESET}"
+    left=$((left + 1))
+    continue
+  fi
+  mv "$src" "$target"
+  moved=$((moved + 1))
+done <"$plan"
+
+picked "Moved $moved file(s) → ${dest_dir}"
+if [[ "$left" -gt 0 ]]; then
+  echo "${C_MUTED}Left in place: $left${C_RESET}"
+fi
+if [[ "$skip_n" -gt 0 ]]; then
+  echo "${C_MUTED}Skipped (not NN. Title): $skip_n${C_RESET}"
+fi

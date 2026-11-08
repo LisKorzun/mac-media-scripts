@@ -61,6 +61,7 @@ Everyday path: **`to-apple`** for Mac/iPhone, **`to-lg-tv`** for the living-room
 | `[to-lg-tv](specs/to-lg-tv.txt)` | LG OLED C2 (USB player) | `*_lgc2.mkv` |
 | `[to-mp4](specs/to-mp4.txt)` | Experiment / one-off | `*_854_crf23.mp4` etc. |
 | `[cut-mp4](specs/cut-mp4.txt)` | Short clips from a ready mp4 | `*_cut_*.mp4` |
+| `[pack-show](specs/pack-show.txt)` | Season folders → one folder | `S01E01 · Title.ext` |
 | `[tailwind-clr](specs/tailwind-clr.txt)` | Color palette (not video) | `.clr` |
 
 **`to-apple`** — HEVC 1080p + AAC + text subtitles in MP4. Plays in QuickTime / TV / Files on iPhone. One file or a queue (`1 3 5`): tracks for each film **before** encoding starts, then it runs sequentially. Use this for movies you will watch on Apple devices.
@@ -70,6 +71,8 @@ Everyday path: **`to-apple`** for Mac/iPhone, **`to-lg-tv`** for the living-room
 **`to-mp4`** — one file per run. You pick width and CRF; H.264 + AAC. Default 854px is smaller/faster and looks softer on the iMac than `to-apple`. Keep it when you want control, not as the daily Apple/TV profile.
 
 **`cut-mp4`** — stream copy (fast). Times like `1:12:05`. Run it on `_apple.mp4`, not on the original MKV.
+
+**`pack-show`** — seasons (`s01`, `Season 2`, `сезон 3`) into one folder next to the show. `01. Title.mkv` becomes `S01E01 · Title.mkv`. Preview, then move. Empty season folders stay. Then convert with `to-apple` / `to-lg-tv` from that flat folder.
 
 ## Running scripts
 
@@ -81,6 +84,7 @@ to-apple                  # Mac / iPhone
 to-lg-tv                  # TV USB
 to-mp4                    # manual H.264
 cut-mp4                   # clip from an already-converted mp4
+pack-show                 # seasons → one folder, S01E01 · Title
 ```
 
 1. List of videos in the current folder → type a number (`1`) or several (`1 3 5`).
