@@ -62,6 +62,7 @@ Everyday path: **`to-apple`** for Mac/iPhone, **`to-lg-tv`** for the living-room
 | `[to-mp4](specs/to-mp4.txt)` | Experiment / one-off | `*_854_crf23.mp4` etc. |
 | `[cut-mp4](specs/cut-mp4.txt)` | Short clips from a ready mp4 | `*_cut_*.mp4` |
 | `[pack-show](specs/pack-show.txt)` | Season folders → one folder | `S01E01 · Title.ext` |
+| `[sort-ready](specs/sort-ready.txt)` | Both conversions done | `Apple/` and `LG/`, original deleted |
 | `[tailwind-clr](specs/tailwind-clr.txt)` | Color palette (not video) | `.clr` |
 
 **`to-apple`** — HEVC 1080p + AAC + text subtitles in MP4. Plays in QuickTime / TV / Files on iPhone. One file or a queue (`1 3 5`): tracks for each film **before** encoding starts, then it runs sequentially. Use this for movies you will watch on Apple devices.
@@ -74,6 +75,8 @@ Everyday path: **`to-apple`** for Mac/iPhone, **`to-lg-tv`** for the living-room
 
 **`pack-show`** — seasons (`s01`, `Season 2`, `сезон 3`) into one folder next to the show. `01. Title.mkv` becomes `S01E01 · Title.mkv`. Preview, then move. Empty season folders stay. Then convert with `to-apple` / `to-lg-tv` from that flat folder.
 
+**`sort-ready`** — after both conversions exist. `Title_apple.mp4` goes to `Apple/Title.mp4`, `Title_lgc2.mkv` to `LG/Title.mkv`, and the original is deleted. If only Apple or only LG is done, that title stays untouched.
+
 ## Running scripts
 
 Media scripts look for video in **the folder you are in** (`cd` there first). Output is written next to the source. `inprogress/` in this repo is optional — any folder with the files is fine.
@@ -85,6 +88,7 @@ to-lg-tv                  # TV USB
 to-mp4                    # manual H.264
 cut-mp4                   # clip from an already-converted mp4
 pack-show                 # seasons → one folder, S01E01 · Title
+sort-ready                # both converts → Apple/ and LG/, delete original
 ```
 
 1. List of videos in the current folder → type a number (`1`) or several (`1 3 5`).

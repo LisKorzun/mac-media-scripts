@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# When both _apple and _lgc2 exist, file them into Apple/ and LG/ and delete the original.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+C_WARN=$'\033[38;5;215m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }
+}
+
+need python3
+
+plan_dir() {
+  python3 - "$1" <<'PY'
+import os, sys
+folder = sys.argv[1]
+exts = {".mkv", ".mp4", ".mov", ".m4v", ".avi", ".webm", ".ts", ".m2ts"}
+groups = {}
+
+def slot(key):
+    return groups.setdefault(key, {"orig": [], "apple": [], "lg": []})
+
+for name in os.listdir(folder):
+    if name.startswith("."):
+        continue
+    path = os.path.join(folder, name)
+    if not os.path.isfile(path):
+        continue
+    base, ext = os.path.splitext(name)
+    if ext.lower() not in exts:
+        continue
+    if base.endswith("_apple"):
+        slot(base[: -len("_apple")])["apple"].append(name)
+    elif base.endswith("_lgc2"):
+        slot(base[: -len("_lgc2")])["lg"].append(name)
+    else:
+        slot(base)["orig"].append(name)
+
+def cell(value):
+    return value if value else "-"
+
+ready = []
+incomplete = []
+for key in sorted(groups):
+    g = groups[key]
+    if not g["apple"] and not g["lg"]:
+        continue
+    if len(g["apple"]) == 1 and len(g["lg"]) == 1 and len(g["orig"]) <= 1:
+        apple = g["apple"][0]
+        lg = g["lg"][0]
+        orig = g["orig"][0] if g["orig"] else "-"
+        ab, ae = os.path.splitext(apple)
+        lb, le = os.path.splitext(lg)
+        apple_dest = ab[: -len("_apple")] + ae
+        lg_dest = lb[: -len("_lgc2")] + le
+        ready.append((key, cell(orig), apple, lg, apple_dest, lg_dest))
+    else:
+        incomplete.append((
+            key,
+            cell(g["orig"][0] if g["orig"] else ""),
+            cell(g["apple"][0] if g["apple"] else ""),
+            cell(g["lg"][0] if g["lg"] else ""),
+        ))
+
+if not ready and not incomplete:
+    raise SystemExit(2)
+for row in ready:
+    sys.stdout.write("ready\t" + "\t".join(row) + "\n")
+for key, orig, apple, lg in incomplete:
+    sys.stdout.write("wait\t%s\t%s\t%s\t%s\n" % (key, orig, apple, lg))
+PY
+}
+
+here=$(pwd)
+folder=""
+if plan_dir "$here" >/dev/null 2>/dev/null; then
+  folder="$here"
+else
+  picks=()
+  while IFS= read -r -d '' d; do
+    if plan_dir "$d" >/dev/null 2>/dev/null; then
+      picks+=("$d")
+    fi
+  done < <(find . -maxdepth 1 -mindepth 1 -type d ! -name '.*' -print0 | sort -z)
+  if [[ ${#picks[@]} -eq 0 ]]; then
+    echo "No _apple / _lgc2 files here."
+    echo "cd into the folder with originals and both conversions, then run sort-ready."
+    exit 1
+  fi
+  banner "Folders with conversions:"
+  i=1
+  for d in "${picks[@]}"; do
+    printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${d#./}"
+    i=$((i + 1))
+  done
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  while true; do
+    printf "${C_PROMPT}Select folder (1-%d):${C_RESET} " "${#picks[@]}"
+    read -r pick
+    if [[ "$pick" =~ ^[1-9][0-9]*$ ]] && [[ "$pick" -ge 1 && "$pick" -le ${#picks[@]} ]]; then
+      folder="${picks[$((pick - 1))]}"
+      break
+    fi
+    echo "Please enter a number from 1 to ${#picks[@]}"
+  done
+fi
+picked "Folder: ${folder#./}"
+
+plan=$(mktemp)
+trap 'rm -f "$plan"' EXIT
+plan_dir "$folder" >"$plan"
+
+ready_n=0
+wait_n=0
+banner "Will sort (both Apple and LG exist):"
+while IFS=$'\t' read -r kind key orig apple lg apple_dest lg_dest; do
+  [[ "$kind" == "ready" ]] || continue
+  ready_n=$((ready_n + 1))
+  echo "  ${apple}  →  Apple/${apple_dest}"
+  echo "  ${lg}  →  LG/${lg_dest}"
+  if [[ "$orig" != "-" ]]; then
+    echo "  ${C_MUTED}delete original  ${orig}${C_RESET}"
+  fi
+done <"$plan"
+if [[ "$ready_n" -eq 0 ]]; then
+  echo "${C_MUTED}  (none)${C_RESET}"
+fi
+
+banner "Left in place (only one conversion):"
+while IFS=$'\t' read -r kind key orig apple lg rest; do
+  [[ "$kind" == "wait" ]] || continue
+  wait_n=$((wait_n + 1))
+  if [[ "$apple" != "-" && "$lg" != "-" ]]; then
+    why="not a clean pair"
+  elif [[ "$apple" != "-" ]]; then
+    why="Apple only"
+  else
+    why="LG only"
+  fi
+  echo "${C_WARN}  ${key}  (${why})${C_RESET}"
+done <"$plan"
+if [[ "$wait_n" -eq 0 ]]; then
+  echo "${C_MUTED}  (none)${C_RESET}"
+fi
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}Folders Apple/ and LG/ are created inside this folder. _apple and _lgc2 are removed from the names.${C_RESET}"
+
+if [[ "$ready_n" -eq 0 ]]; then
+  echo "Nothing to sort."
+  exit 0
+fi
+
+printf "${C_PROMPT}Sort %d title(s) and delete their originals? [Y/n]:${C_RESET} " "$ready_n"
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+apple_dir="${folder}/Apple"
+lg_dir="${folder}/LG"
+mkdir -p "$apple_dir" "$lg_dir"
+
+done_n=0
+skipped=0
+while IFS=$'\t' read -r kind key orig apple lg apple_dest lg_dest; do
+  [[ "$kind" == "ready" ]] || continue
+  apple_to="${apple_dir}/${apple_dest}"
+  lg_to="${lg_dir}/${lg_dest}"
+  if [[ -e "$apple_to" || -e "$lg_to" ]]; then
+    echo "${C_WARN}exists, skip: ${key}${C_RESET}"
+    skipped=$((skipped + 1))
+    continue
+  fi
+  mv "${folder}/${apple}" "$apple_to"
+  mv "${folder}/${lg}" "$lg_to"
+  if [[ "$orig" != "-" ]]; then
+    rm -f "${folder}/${orig}"
+  fi
+  done_n=$((done_n + 1))
+done <"$plan"
+
+picked "Sorted $done_n title(s) → Apple/ and LG/"
+if [[ "$skipped" -gt 0 ]]; then
+  echo "${C_MUTED}Skipped (name already in folder): $skipped${C_RESET}"
+fi
+if [[ "$wait_n" -gt 0 ]]; then
+  echo "${C_MUTED}Left unfinished: $wait_n${C_RESET}"
+fi
