@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Remove macOS ._* sidecar files in the current folder on a flash drive, then check they are gone.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+C_WARN=$'\033[38;5;215m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+echo "Checking $(pwd) …"
+
+mount=$(df -P . | tail -1 | sed 's/.*%[[:space:]]*//')
+case "$mount" in
+  /Volumes/*) ;;
+  *)
+    echo "This folder is on the Mac ($mount), not a flash drive."
+    echo "cd into the stick (a folder under /Volumes), then run clean-stick."
+    exit 1
+    ;;
+esac
+
+fs=$(diskutil info "$mount" 2>/dev/null | awk -F': +' '/File System Personality/ {print $2; exit}' || true)
+fs=${fs:-unknown}
+
+list_sidecars() {
+  find . -name '._*' -print 2>/dev/null | sort || true
+}
+
+banner "Flash drive:"
+echo "  folder  $(pwd)"
+echo "  volume  $mount"
+echo "  fs      $fs"
+echo "${C_MUTED}Looking for hidden ._* files (the broken duplicates on the LG).${C_RESET}"
+
+sidecars=$(mktemp)
+stores=$(mktemp)
+trap 'rm -f "$sidecars" "$stores"' EXIT
+list_sidecars >"$sidecars"
+find . -name '.DS_Store' -print 2>/dev/null | sort >"$stores" || true
+n=$(wc -l <"$sidecars" | tr -d ' ')
+ds=$(wc -l <"$stores" | tr -d ' ')
+
+if [[ "$n" -eq 0 && "$ds" -eq 0 ]]; then
+  picked "Already clean: no ._* or .DS_Store files"
+  exit 0
+fi
+
+banner "Found:"
+echo "  ._* files   $n"
+echo "  .DS_Store   $ds"
+if [[ "$n" -gt 0 ]]; then
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  head -n 20 "$sidecars" | while IFS= read -r f; do
+    printf "  %s\n" "${f#./}"
+  done
+  if [[ "$n" -gt 20 ]]; then
+    echo "${C_MUTED}  … and $((n - 20)) more${C_RESET}"
+  fi
+fi
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}Movies stay. Only the Mac sidecar files are removed.${C_RESET}"
+
+printf "${C_PROMPT}Delete them and check again? [Y/n]:${C_RESET} "
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+if command -v dot_clean >/dev/null 2>&1; then
+  dot_clean -m . || true
+fi
+# exFAT: unlink of a "._" name often returns "No such file". Rename first, then delete.
+python3 - "$(pwd)" <<'PY'
+import os, sys
+root = sys.argv[1]
+
+def purge(dirpath):
+    try:
+        names = os.listdir(dirpath)
+    except OSError:
+        return
+    fd = os.open(dirpath, os.O_RDONLY)
+    n = 0
+    try:
+        for name in names:
+            if not (name.startswith("._") or name == ".DS_Store"):
+                continue
+            try:
+                os.unlink(name, dir_fd=fd)
+                continue
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            while True:
+                tmp = "clean-stick-%d" % n
+                n += 1
+                try:
+                    os.stat(tmp, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    break
+            try:
+                os.rename(name, tmp, src_dir_fd=fd, dst_dir_fd=fd)
+            except FileNotFoundError:
+                continue
+            os.unlink(tmp, dir_fd=fd)
+    finally:
+        os.close(fd)
+    for name in names:
+        path = os.path.join(dirpath, name)
+        if name in (".", "..") or name.startswith("._"):
+            continue
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                purge(path)
+        except OSError:
+            pass
+
+purge(root)
+PY
+
+left=$(mktemp)
+trap 'rm -f "$sidecars" "$stores" "$left"' EXIT
+list_sidecars >"$left"
+left_n=$(wc -l <"$left" | tr -d ' ')
+left_ds=$(find . -name '.DS_Store' -print 2>/dev/null | wc -l | tr -d ' ')
+
+banner "Check:"
+if [[ "$left_n" -eq 0 && "$left_ds" -eq 0 ]]; then
+  picked "Gone. Removed $n ._* file(s) and $ds .DS_Store"
+  exit 0
+fi
+echo "${C_WARN}Still there: $left_n ._* and $left_ds .DS_Store${C_RESET}"
+head -n 20 "$left" | while IFS= read -r f; do
+  printf "  %s\n" "${f#./}"
+done
+exit 1
