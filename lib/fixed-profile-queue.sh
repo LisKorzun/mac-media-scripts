@@ -352,6 +352,12 @@ encode_one() {
     return "$rc"
   fi
   xattr -c "$out" 2>/dev/null || true
+  local py
+  py="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fix-subs.py"
+  if [[ -f "$py" ]]; then
+    python3 "$py" apply "$out" || echo "subtitle letter fix failed"
+    xattr -c "$out" 2>/dev/null || true
+  fi
   return 0
 }
 

@@ -38,6 +38,9 @@ brew install ffmpeg
 - ![to-lg-tv](https://img.shields.io/badge/to--lg--tv-0f766e?style=flat-square)  
   Файл для телевизора LG. В конце имени будет `_lgc2.mkv`. Звук делается таким, чтобы телек его играл, а не молчал.
 
+- ![fix-subs](https://img.shields.io/badge/fix--subs-0f766e?style=flat-square)  
+  Чинит буквы в субтитрах уже готового файла, для Apple и для телека.
+
 - ![sort-ready](https://img.shields.io/badge/sort--ready-6d28d9?style=flat-square)  
   Когда для серии есть оба готовых файла, раскладывает их в папки `Apple/` и `LG/` и убирает пометку из имени. Исходник удаляет. Если готов только один файл, серию не трогает.
 
