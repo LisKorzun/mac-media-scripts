@@ -27,6 +27,15 @@ which to-apple
 brew install ffmpeg
 ```
 
+Для имени и обложки фильма нужна ещё одна программа. Если она уже стоит, вторая команда покажет номер.
+
+```bash
+brew install exiftool
+# поставить программу, которая записывает имя и обложку в mp4
+exiftool -ver
+# должен появиться номер, например 13.55
+```
+
 ## Скрипты
 
 - ![pack-show](https://img.shields.io/badge/pack--show-6d28d9?style=flat-square)  
@@ -34,6 +43,9 @@ brew install ffmpeg
 
 - ![to-apple](https://img.shields.io/badge/to--apple-0f766e?style=flat-square)  
   Файл для Mac и iPhone. В конце имени будет `_apple.mp4`. Размер и качество уже выбраны: вы указываете файлы и дорожки.
+
+- ![tag-movie](https://img.shields.io/badge/tag--movie-0f766e?style=flat-square)  
+  Имя файла и название в приложении TV: `Пила 1 [Saw] 2004`. Постер сам скачивается с Кинопоиска. Видео заново не сжимается.
 
 - ![to-lg-tv](https://img.shields.io/badge/to--lg--tv-0f766e?style=flat-square)  
   Файл для телевизора LG. В конце имени будет `_lgc2.mkv`. Звук делается таким, чтобы телек его играл, а не молчал.
@@ -52,6 +64,9 @@ brew install ffmpeg
 
 - ![cut-mp4](https://img.shields.io/badge/cut--mp4-0f766e?style=flat-square)  
   Вырезает кусок из уже готового mp4. Заново видео не пережимает.
+
+- ![to-txt](https://img.shields.io/badge/to--txt-64748b?style=flat-square)  
+  Из Word и DjVu делает txt и docx для Pages. Сноски в книге становятся номерами.
 
 - ![tailwind-clr](https://img.shields.io/badge/tailwind--clr-64748b?style=flat-square)  
   Не про видео. Собирает палитру цветов Tailwind в файл для Mac.
@@ -104,3 +119,19 @@ clean-stick
 ## Фильм
 
 Без `pack-show`. Дальше те же шаги 2–5.
+
+Имя, год, жанр и обложка — пока файл ещё на Маке. Скрипт сам предлагает название и жанр, постер кладёт png в `Pictures/Video`.
+
+```bash
+tag-movie
+# номера mp4
+# строка с названием — Enter оставляет её
+# жанр — Enter оставляет, цифра из списка меняет
+# нет английского — Enter, имя без скобок. Убрать чужое: n, 0, минус
+# имя станет таким: Пила 1 [Saw] 2004
+# в конце должно быть Done
+```
+
+Потом в приложении TV добавь файл, которого там ещё не было, и посмотри, открылся ли он в «Фильмы».
+
+Если фильм уже был в библиотеке, обложка не обновится сама. Убери его из библиотеки (файл на Маке не удаляй) и добавь mp4 снова.

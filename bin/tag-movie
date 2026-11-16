@@ -1,0 +1,1009 @@
+#!/usr/bin/env bash
+# Rename mp4 files and write the same title, year, genre, cover, and Movie kind.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+COVER_DIR="${TAG_MOVIE_COVERS:-$HOME/Pictures/Video}"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/tag-movie.py"
+
+genres=(
+  "Фильмы ужасов"
+  "Фантастика"
+  "Фэнтези"
+  "Боевик"
+  "Триллер"
+  "Драма"
+  "Комедия"
+  "Мультфильм"
+  "Приключения"
+  "Криминал"
+  "Детектив"
+  "Мелодрама"
+  "Семейный"
+  "Военный"
+)
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }
+}
+
+trim() {
+  python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFC", sys.argv[1]).strip())' "$1"
+}
+
+confirm_yes() {
+  local ans lower
+  while true; do
+    printf "${C_PROMPT}%s [Y/n]:${C_RESET} " "$1"
+    IFS= read -r ans || exit 1
+    lower=$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')
+    case "$lower" in
+      y|yes|"") return 0 ;;
+      n|no) return 1 ;;
+      *) echo "Enter y or n." ;;
+    esac
+  done
+}
+
+ask_required() {
+  local value
+  while true; do
+    printf "${C_PROMPT}%s${C_RESET} " "$1"
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ -n "$value" ]]; then
+      ANS=$value
+      return 0
+    fi
+    echo "Enter something."
+  done
+}
+
+piece_ok() {
+  if [[ "$1" == *[/:\[\]]* ]]; then
+    echo "Without / : [ ]"
+    return 1
+  fi
+  return 0
+}
+
+ask_part() {
+  local value
+  while true; do
+    printf "${C_PROMPT}Part number (Enter if none):${C_RESET} " 
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ -z "$value" ]]; then
+      ANS=""
+      return 0
+    fi
+    if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+      ANS=$value
+      return 0
+    fi
+    echo "Enter a number like 1 or 2, or press Enter if this film has no number."
+  done
+}
+
+ask_year() {
+  local value
+  while true; do
+    printf "${C_PROMPT}Year:${C_RESET} " 
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ "$value" =~ ^[0-9]{4}$ ]]; then
+      ANS=$value
+      return 0
+    fi
+    echo "Four digits, example: 2004"
+  done
+}
+
+compose_name() {
+  local left=$1
+  if [[ -n "$3" ]]; then
+    left="$1 $3"
+  fi
+  if [[ -n "$2" ]]; then
+    printf '%s\n' "$left [$2] $4"
+  else
+    printf '%s\n' "$left $4"
+  fi
+}
+
+name_ok() {
+  local bytes
+  bytes=$(python3 -c 'import sys; print(len((sys.argv[1] + ".mp4").encode("utf-8")))' "$1")
+  if [[ "$bytes" -gt 255 ]]; then
+    echo "Name is too long for a file."
+    return 1
+  fi
+  return 0
+}
+
+name_taken() {
+  local title=$1 src=$2 dest dir i
+  dir=$(dirname "$src")
+  dest="$dir/$title.mp4"
+  if [[ -e "$dest" && ! "$src" -ef "$dest" ]]; then
+    return 0
+  fi
+  i=0
+  while [[ $i -lt ${#plan_title[@]} ]]; do
+    if [[ "${plan_title[$i]}" == "$title" ]]; then
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+show_genre_list() {
+  local i g
+  i=1
+  for g in "${genres[@]}"; do
+    printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$i" "$g"
+    i=$((i + 1))
+  done
+  printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$i" "other"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  GENRE_OTHER=$i
+}
+
+apply_genre_number() {
+  local ans=$1
+  if [[ ! "$ans" =~ ^[1-9][0-9]*$ ]]; then
+    return 1
+  fi
+  if ((10#$ans == GENRE_OTHER)); then
+    while true; do
+      ask_required "Genre word:"
+      if piece_ok "$ANS"; then
+        return 0
+      fi
+    done
+  fi
+  if ((10#$ans < 1 || 10#$ans > ${#genres[@]})); then
+    return 1
+  fi
+  ANS=${genres[$((10#$ans - 1))]}
+  return 0
+}
+
+pick_genre() {
+  local ans
+  banner "Genre"
+  show_genre_list
+  echo "${C_MUTED}This word is what the TV app will show.${C_RESET}"
+  while true; do
+    if [[ -n "$genre_default" ]]; then
+      printf "${C_PROMPT}Genre number [Enter = %s]:${C_RESET} " "$genre_default"
+    else
+      printf "${C_PROMPT}Genre number:${C_RESET} "
+    fi
+    IFS= read -r ans || exit 1
+    ans=$(trim "$ans")
+    if [[ -z "$ans" && -n "$genre_default" ]]; then
+      ANS=$genre_default
+      return 0
+    fi
+    if apply_genre_number "$ans"; then
+      return 0
+    fi
+    echo "Enter a number from the list."
+  done
+}
+
+pick_cover() {
+  local query typed out first rest shown path idx choice
+  while true; do
+    if [[ -n "$prev_query" ]]; then
+      printf "${C_PROMPT}Cover search [%s]:${C_RESET} " "$prev_query"
+    else
+      printf "${C_PROMPT}Cover search:${C_RESET} " 
+    fi
+    IFS= read -r typed || exit 1
+    typed=$(trim "$typed")
+    if [[ -z "$typed" ]]; then
+      if [[ -n "$prev_query" ]]; then
+        query=$prev_query
+      else
+        echo "Type part of the png name."
+        continue
+      fi
+    else
+      query=$typed
+    fi
+    out=$(python3 - "$COVER_DIR" "$query" <<'PY'
+import os, sys, unicodedata
+folder, query = sys.argv[1], sys.argv[2]
+query = unicodedata.normalize("NFC", query).casefold()
+rows = []
+for name in os.listdir(folder):
+    if name.startswith("."):
+        continue
+    if not name.lower().endswith(".png"):
+        continue
+    path = os.path.join(folder, name)
+    if not os.path.isfile(path):
+        continue
+    shown = unicodedata.normalize("NFC", name)
+    if query in shown.casefold():
+        rows.append((shown.casefold(), shown, path))
+rows.sort()
+if not rows:
+    print("NONE")
+    raise SystemExit(0)
+if len(rows) > 30:
+    print("MANY")
+    raise SystemExit(0)
+print("OK")
+for _, shown, path in rows:
+    sys.stdout.write("%s\t%s\n" % (shown, path))
+PY
+)
+    first=${out%%$'\n'*}
+    case "$first" in
+      NONE)
+        echo "No png matched."
+        continue
+        ;;
+      MANY)
+        echo "Too many matches. Type a longer piece of the name."
+        continue
+        ;;
+      OK) ;;
+      *)
+        echo "Could not read covers."
+        continue
+        ;;
+    esac
+    rest=${out#"OK"$'\n'}
+    matches=()
+    match_paths=()
+    while IFS=$'\t' read -r shown path; do
+      [[ -z "${shown:-}" ]] && continue
+      matches+=("$shown")
+      match_paths+=("$path")
+    done <<< "$rest"
+    if [[ ${#matches[@]} -eq 0 ]]; then
+      echo "No png matched."
+      continue
+    fi
+    idx=0
+    while [[ $idx -lt ${#matches[@]} ]]; do
+      printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$((idx + 1))" "${matches[$idx]}"
+      idx=$((idx + 1))
+    done
+    echo "${C_HEAD}${SEP}${C_RESET}"
+    while true; do
+      printf "${C_PROMPT}Cover number (0 to search again):${C_RESET} " 
+      IFS= read -r choice || exit 1
+      choice=$(trim "$choice")
+      if [[ "$choice" == "0" ]]; then
+        break
+      fi
+      if [[ ! "$choice" =~ ^[1-9][0-9]*$ ]] || ((10#$choice < 1 || 10#$choice > ${#matches[@]})); then
+        echo "Enter a number from the list, or 0 to search again."
+        continue
+      fi
+      ANS_PATH=${match_paths[$((10#$choice - 1))]}
+      ANS_NAME=${matches[$((10#$choice - 1))]}
+      prev_query=$query
+      return 0
+    done
+  done
+}
+
+save_poster() {
+  local url=$1 ru=$2 part=$3 dest name
+  if [[ -n "$part" ]]; then
+    name="$ru $part.png"
+  else
+    name="$ru.png"
+  fi
+  dest="$COVER_DIR/$name"
+  echo "Downloading poster…"
+  if ! python3 "$PY" fetch "$url" "$dest"; then
+    echo "Could not download the poster."
+    pick_cover
+    return
+  fi
+  ANS_PATH=$dest
+  ANS_NAME=$name
+}
+
+pick_poster() {
+  local ru=$1 en=$2 year=$3 part=$4
+  local out line mode fru fen fyear furl label choice sure_url sure_label idx rest
+  rows_labels=()
+  rows_urls=()
+  sure_url=""
+  sure_label=""
+  mode=""
+  if ! out=$(python3 "$PY" search "$ru" "$en" "$year"); then
+    echo "Kinopoisk did not answer."
+    pick_cover
+    return
+  fi
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      SURE|LIST|NONE)
+        mode=$line
+        continue
+        ;;
+    esac
+    fru=${line%%$'\t'*}
+    rest=${line#*$'\t'}
+    fen=${rest%%$'\t'*}
+    rest=${rest#*$'\t'}
+    fyear=${rest%%$'\t'*}
+    furl=${rest#*$'\t'}
+    label="$fru / $fen · $fyear"
+    if [[ "$mode" == "SURE" && -z "$sure_url" ]]; then
+      sure_url=$furl
+      sure_label=$label
+    else
+      rows_labels+=("$label")
+      rows_urls+=("$furl")
+    fi
+  done <<< "$out"
+  if [[ "$mode" == "NONE" || -z "$mode" ]]; then
+    echo "No film found."
+    pick_cover
+    return
+  fi
+  if [[ -n "$sure_url" ]]; then
+    echo "Cover: $sure_label"
+    if confirm_yes "Use this poster?"; then
+      save_poster "$sure_url" "$ru" "$part"
+      return
+    fi
+  fi
+  if [[ ${#rows_labels[@]} -eq 0 ]]; then
+    pick_cover
+    return
+  fi
+  idx=0
+  printf "${C_PROMPT}%2d.${C_RESET} %s\n" 0 "png from Pictures/Video"
+  while [[ $idx -lt ${#rows_labels[@]} ]]; do
+    printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$((idx + 1))" "${rows_labels[$idx]}"
+    idx=$((idx + 1))
+  done
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  while true; do
+    printf "${C_PROMPT}Cover number:${C_RESET} "
+    IFS= read -r choice || exit 1
+    choice=$(trim "$choice")
+    if [[ "$choice" == "0" ]]; then
+      pick_cover
+      return
+    fi
+    if [[ ! "$choice" =~ ^[1-9][0-9]*$ ]] || ((10#$choice < 1 || 10#$choice > ${#rows_labels[@]})); then
+      echo "Enter a number from the list."
+      continue
+    fi
+    save_poster "${rows_urls[$((10#$choice - 1))]}" "$ru" "$part"
+    return
+  done
+}
+
+read_fields() {
+  local line
+  FIELD_1=""
+  FIELD_2=""
+  FIELD_3=""
+  FIELD_4=""
+  FIELD_5=""
+  FIELD_6=""
+  FIELD_7=""
+  FIELD_8=""
+  line=$(python3 -c 'import sys; sys.stdout.write(sys.argv[1].replace("\t", "\x1f"))' "$1")
+  IFS=$'\x1f' read -r FIELD_1 FIELD_2 FIELD_3 FIELD_4 FIELD_5 FIELD_6 FIELD_7 FIELD_8 <<< "$line"
+}
+
+split_row() {
+  read_fields "$1"
+  PROP_RU=$FIELD_1
+  PROP_EN=$FIELD_2
+  PROP_PART=$FIELD_3
+  PROP_YEAR=$FIELD_4
+  PROP_GENRE=$FIELD_5
+  PROP_URL=$FIELD_6
+  PROP_FULL_RU=$FIELD_7
+  PROP_FULL_EN=$FIELD_8
+}
+
+row_label() {
+  local full_ru full_en year
+  read_fields "$1"
+  full_ru=$FIELD_7
+  full_en=$FIELD_8
+  year=$FIELD_4
+  if [[ -n "$full_en" ]]; then
+    printf '%s / %s · %s\n' "$full_ru" "$full_en" "$year"
+  else
+    printf '%s · %s\n' "$full_ru" "$year"
+  fi
+}
+
+load_propose() {
+  local out line mode
+  sure_line=""
+  list_lines=()
+  mode=""
+  if ! out=$(python3 "$PY" propose "$1"); then
+    return 1
+  fi
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      SURE|LIST|NONE)
+        mode=$line
+        continue
+        ;;
+    esac
+    if [[ "$mode" == "SURE" && -z "$sure_line" ]]; then
+      sure_line=$line
+    elif [[ "$mode" == "LIST" ]]; then
+      list_lines+=("$line")
+    fi
+  done <<< "$out"
+  if [[ "$mode" == "NONE" || -z "$mode" ]]; then
+    return 2
+  fi
+  return 0
+}
+
+fill_genre() {
+  local g
+  if [[ -n "$PROP_GENRE" || -z "$PROP_FULL_RU" || ! "$PROP_YEAR" =~ ^[0-9]{4}$ ]]; then
+    return 0
+  fi
+  if g=$(python3 "$PY" genre "$PROP_FULL_RU" "$PROP_YEAR"); then
+    g=$(trim "$g")
+    if [[ -n "$g" && "$g" != "NONE" ]]; then
+      PROP_GENRE=$g
+    fi
+  fi
+}
+
+ask_keep() {
+  local value
+  while true; do
+    if [[ -n "$2" ]]; then
+      printf "${C_PROMPT}%s [%s]:${C_RESET} " "$1" "$2"
+    else
+      printf "${C_PROMPT}%s${C_RESET} " "$1"
+    fi
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ -z "$value" ]]; then
+      value=$2
+    fi
+    if [[ -z "$value" ]]; then
+      echo "Enter something."
+      continue
+    fi
+    if piece_ok "$value"; then
+      ANS=$value
+      return 0
+    fi
+  done
+}
+
+ask_english() {
+  local current=$1 value
+  while true; do
+    if [[ -n "$current" ]]; then
+      printf "${C_PROMPT}English title [%s] (- to skip):${C_RESET} " "$current"
+    else
+      printf "${C_PROMPT}English title (Enter to skip):${C_RESET} "
+    fi
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ -z "$value" ]]; then
+      ANS=$current
+      return 0
+    fi
+    if [[ "$value" == "-" ]]; then
+      ANS=""
+      return 0
+    fi
+    if piece_ok "$value"; then
+      ANS=$value
+      return 0
+    fi
+  done
+}
+
+ask_part_keep() {
+  local value shown
+  if [[ -n "$PROP_PART" ]]; then
+    shown=$PROP_PART
+  else
+    shown="none"
+  fi
+  while true; do
+    printf "${C_PROMPT}Part number [%s]:${C_RESET} " "$shown"
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ -z "$value" ]]; then
+      return 0
+    fi
+    if [[ "$value" == "-" ]]; then
+      PROP_PART=""
+      return 0
+    fi
+    if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+      PROP_PART=$value
+      return 0
+    fi
+    echo "Enter a number like 1 or 2, - to clear, or press Enter to keep."
+  done
+}
+
+ask_year_keep() {
+  local value
+  while true; do
+    if [[ "$PROP_YEAR" =~ ^[0-9]{4}$ ]]; then
+      printf "${C_PROMPT}Year [%s]:${C_RESET} " "$PROP_YEAR"
+    else
+      printf "${C_PROMPT}Year:${C_RESET} "
+    fi
+    IFS= read -r value || exit 1
+    value=$(trim "$value")
+    if [[ -z "$value" && "$PROP_YEAR" =~ ^[0-9]{4}$ ]]; then
+      return 0
+    fi
+    if [[ "$value" =~ ^[0-9]{4}$ ]]; then
+      PROP_YEAR=$value
+      return 0
+    fi
+    echo "Four digits, example: 2004"
+  done
+}
+
+edit_fields() {
+  ask_keep "Russian title" "$PROP_RU"
+  PROP_RU=$ANS
+  ask_english "$PROP_EN"
+  PROP_EN=$ANS
+  ask_part_keep
+  ask_year_keep
+  genre_default=$PROP_GENRE
+  pick_genre
+  PROP_GENRE=$ANS
+  genre_default=""
+}
+
+choose_other() {
+  local choice idx
+  if [[ ${#list_lines[@]} -eq 0 ]]; then
+    return 1
+  fi
+  echo "${C_MUTED}$1${C_RESET}"
+  idx=0
+  while [[ $idx -lt ${#list_lines[@]} ]]; do
+    printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$((idx + 1))" "$(row_label "${list_lines[$idx]}")"
+    idx=$((idx + 1))
+  done
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  while true; do
+    printf "${C_PROMPT}Number:${C_RESET} "
+    IFS= read -r choice || exit 1
+    choice=$(trim "$choice")
+    if [[ "$choice" == "0" ]]; then
+      return 1
+    fi
+    if [[ "$choice" =~ ^[1-9][0-9]*$ ]] && ((10#$choice >= 1 && 10#$choice <= ${#list_lines[@]})); then
+      split_row "${list_lines[$((10#$choice - 1))]}"
+      PROP_GENRE=""
+      echo "Looking up the genre…"
+      fill_genre
+      return 0
+    fi
+    echo "Enter a number from the list, or 0 to edit."
+  done
+}
+
+show_card() {
+  local title=$1
+  if [[ -n "$PROP_FULL_EN" && "$PROP_FULL_EN" != "$PROP_FULL_RU" ]]; then
+    echo "${C_MUTED}Found: ${PROP_FULL_RU} / ${PROP_FULL_EN} · ${PROP_YEAR}${C_RESET}"
+  else
+    echo "${C_MUTED}Found: ${PROP_FULL_RU} · ${PROP_YEAR}${C_RESET}"
+  fi
+  echo "Name: $title"
+  if [[ -n "$PROP_GENRE" ]]; then
+    echo "Genre: $PROP_GENRE"
+  else
+    echo "Genre: not found"
+  fi
+}
+
+card_ready() {
+  local title
+  if [[ -z "$PROP_RU" || ! "$PROP_YEAR" =~ ^[0-9]{4}$ ]]; then
+    echo "The name is incomplete."
+    return 1
+  fi
+  if ! piece_ok "$PROP_RU"; then
+    return 1
+  fi
+  if [[ -n "$PROP_EN" ]] && ! piece_ok "$PROP_EN"; then
+    return 1
+  fi
+  title=$(compose_name "$PROP_RU" "$PROP_EN" "$PROP_PART" "$PROP_YEAR")
+  if ! name_ok "$title"; then
+    return 1
+  fi
+  if name_taken "$title" "$1"; then
+    echo "That name is already used. Type another."
+    return 1
+  fi
+  CARD_TITLE=$title
+  return 0
+}
+
+remember_plan() {
+  local src=$1 title=$2 genre=$3 cover=$4 cover_name=$5
+  plan_src+=("$src")
+  plan_title+=("$title")
+  plan_year+=("$PROP_YEAR")
+  plan_genre+=("$genre")
+  plan_cover+=("$cover")
+  plan_cover_name+=("$cover_name")
+}
+
+take_poster() {
+  if [[ -n "$PROP_URL" ]]; then
+    save_poster "$PROP_URL" "$PROP_RU" "$PROP_PART"
+    return
+  fi
+  pick_cover
+}
+
+manual_film() {
+  local src=$1 ru en part year title genre cover cover_name
+  while true; do
+    while true; do
+      ask_required "Russian title:"
+      ru=$ANS
+      piece_ok "$ru" && break
+    done
+    ask_english ""
+    en=$ANS
+    ask_part
+    part=$ANS
+    ask_year
+    year=$ANS
+    title=$(compose_name "$ru" "$en" "$part" "$year")
+    if ! name_ok "$title"; then
+      continue
+    fi
+    if name_taken "$title" "$src"; then
+      echo "That name is already used. Type another."
+      continue
+    fi
+    picked "Name: $title"
+    if ! confirm_yes "Use this name?"; then
+      continue
+    fi
+    genre_default=""
+    pick_genre
+    genre=$ANS
+    picked "Genre: $genre"
+    pick_poster "$ru" "$en" "$year" "$part"
+    cover=$ANS_PATH
+    cover_name=$ANS_NAME
+    picked "Cover: $cover_name"
+    PROP_YEAR=$year
+    remember_plan "$src" "$title" "$genre" "$cover" "$cover_name"
+    return 0
+  done
+}
+
+verify_tags() {
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import json, subprocess, sys
+path, title, genre, year, cover = sys.argv[1:]
+raw = subprocess.check_output([
+    "exiftool", "-j", "-Title", "-Genre", "-ContentCreateDate", "-MediaType", path
+])
+data = json.loads(raw.decode("utf-8"))[0]
+bad = []
+if data.get("Title") != title:
+    bad.append("title")
+if data.get("Genre") != genre:
+    bad.append("genre")
+if str(data.get("ContentCreateDate")) != year:
+    bad.append("year")
+if data.get("MediaType") != "Movie":
+    bad.append("movie")
+got = subprocess.check_output(["exiftool", "-b", "-CoverArt", path])
+with open(cover, "rb") as fh:
+    want = fh.read()
+if got != want:
+    bad.append("cover")
+if bad:
+    sys.stdout.write("Tag check failed: %s\n" % ", ".join(bad))
+    raise SystemExit(1)
+PY
+}
+
+cover_jpeg() {
+  local src=$1 tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/tag-movie.XXXXXX") || return 1
+  EMBED_COVER="$tmp.jpg"
+  rm -f "$tmp"
+  # TV app shows a jpeg cover. The png in Pictures/Video stays as the saved copy.
+  if ! sips -s format jpeg -s formatOptions 92 -s dpiWidth 72 -s dpiHeight 72 "$src" --out "$EMBED_COVER" >/dev/null; then
+    rm -f "$EMBED_COVER"
+    EMBED_COVER=""
+    return 1
+  fi
+}
+
+write_tags() {
+  local src=$1 title=$2 year=$3 genre=$4 cover=$5
+  if ! cover_jpeg "$cover"; then
+    echo "Could not prepare the cover."
+    return 1
+  fi
+  exiftool -q -m -overwrite_original -api LargeFileSupport=1 \
+    -Title="$title" \
+    "-ContentCreateDate#=$year" \
+    -Genre="$genre" \
+    -MediaType=Movie \
+    -CoverArt= \
+    "-CoverArt<=$EMBED_COVER" \
+    "$src"
+}
+
+need python3
+need exiftool
+need sips
+
+if [[ ! -d "$COVER_DIR" ]]; then
+  echo "No cover folder: $COVER_DIR"
+  exit 1
+fi
+
+files=()
+while IFS= read -r -d '' f; do
+  files+=("$f")
+done < <(find . -maxdepth 1 -type f -iname '*.mp4' ! -name '.*' -print0 | sort -z)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "No mp4 files in $(pwd)"
+  exit 1
+fi
+
+banner "MP4 in this folder:"
+i=1
+for f in "${files[@]}"; do
+  printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${f#./}"
+  i=$((i + 1))
+done
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}Pick one or more numbers separated by spaces (example: 1 3 5).${C_RESET}"
+
+chosen=()
+while true; do
+  printf "${C_PROMPT}Select file number(s) (1-%d):${C_RESET} " "${#files[@]}"
+  IFS= read -r pick || exit 1
+  # shellcheck disable=SC2206
+  nums=($pick)
+  ok=1
+  chosen=()
+  seen_ids=" "
+  if [[ ${#nums[@]} -eq 0 ]]; then
+    echo "Enter at least one number."
+    continue
+  fi
+  for n in "${nums[@]}"; do
+    if [[ ! "$n" =~ ^[1-9][0-9]*$ ]] || ((10#$n < 1 || 10#$n > ${#files[@]})); then
+      echo "Bad number: $n"
+      ok=0
+      break
+    fi
+    case "$seen_ids" in
+      *" $n "*) continue ;;
+    esac
+    seen_ids+="$n "
+    chosen+=("${files[$((10#$n - 1))]}")
+  done
+  if [[ "$ok" -eq 1 && ${#chosen[@]} -gt 0 ]]; then
+    break
+  fi
+  if [[ "$ok" -eq 1 ]]; then
+    echo "Enter at least one number."
+  fi
+done
+
+banner "Name"
+echo "${C_MUTED}The file name is looked up on Kinopoisk.${C_RESET}"
+echo "${C_MUTED}Enter keeps the title and the genre. A number picks another genre. n changes the name.${C_RESET}"
+echo "${C_MUTED}Example: Пила 1 [Saw] 2004${C_RESET}"
+echo "${C_MUTED}No English title: n, then 0, then - on the English line.${C_RESET}"
+echo "${C_MUTED}The poster is saved as png in Pictures/Video.${C_RESET}"
+
+plan_src=()
+plan_title=()
+plan_year=()
+plan_genre=()
+plan_cover=()
+plan_cover_name=()
+prev_query=""
+genre_default=""
+GENRE_OTHER=0
+sure_line=""
+list_lines=()
+
+for src in "${chosen[@]}"; do
+  banner "File: ${src#./}"
+  echo "Looking up the film…"
+  status=0
+  load_propose "${src#./}" || status=$?
+  if [[ "$status" -eq 1 ]]; then
+    echo "Kinopoisk did not answer."
+    manual_film "$src"
+    continue
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    echo "No film found for this file name."
+    manual_film "$src"
+    continue
+  fi
+  if [[ -z "$sure_line" && ${#list_lines[@]} -eq 0 ]]; then
+    echo "No film found for this file name."
+    manual_film "$src"
+    continue
+  fi
+  if [[ -n "$sure_line" ]]; then
+    split_row "$sure_line"
+  else
+    echo "Several films match. Pick one."
+    if ! choose_other "0 types the name. A number picks a film."; then
+      manual_film "$src"
+      continue
+    fi
+  fi
+  while true; do
+    if ! card_ready "$src"; then
+      if [[ -n "$PROP_FULL_RU" ]]; then
+        if [[ -n "$PROP_FULL_EN" && "$PROP_FULL_EN" != "$PROP_FULL_RU" ]]; then
+          echo "${C_MUTED}Found: ${PROP_FULL_RU} / ${PROP_FULL_EN} · ${PROP_YEAR}${C_RESET}"
+        else
+          echo "${C_MUTED}Found: ${PROP_FULL_RU} · ${PROP_YEAR}${C_RESET}"
+        fi
+      fi
+      edit_fields
+      continue
+    fi
+    show_card "$CARD_TITLE"
+    show_genre_list
+    while true; do
+      if [[ -n "$PROP_GENRE" ]]; then
+        printf "${C_PROMPT}Genre number [Enter = %s, n = name]:${C_RESET} " "$PROP_GENRE"
+      else
+        printf "${C_PROMPT}Genre number (n = name):${C_RESET} "
+      fi
+      IFS= read -r genre_choice || exit 1
+      genre_choice=$(trim "$genre_choice")
+      genre_lower=$(printf '%s' "$genre_choice" | tr '[:upper:]' '[:lower:]')
+      if [[ -z "$genre_choice" && -n "$PROP_GENRE" ]]; then
+        break 2
+      fi
+      if [[ "$genre_lower" == "n" || "$genre_lower" == "no" ]]; then
+        break
+      fi
+      if apply_genre_number "$genre_choice"; then
+        PROP_GENRE=$ANS
+        break 2
+      fi
+      echo "Enter a number from the list, or n to change the name."
+    done
+    if [[ ${#list_lines[@]} -eq 0 ]]; then
+      edit_fields
+      continue
+    fi
+    if choose_other "0 edits this name. A number picks another film."; then
+      continue
+    fi
+    edit_fields
+  done
+  picked "Name: $CARD_TITLE"
+  picked "Genre: $PROP_GENRE"
+  take_poster
+  picked "Cover: $ANS_NAME"
+  remember_plan "$src" "$CARD_TITLE" "$PROP_GENRE" "$ANS_PATH" "$ANS_NAME"
+done
+
+banner "Preview"
+i=0
+while [[ $i -lt ${#plan_src[@]} ]]; do
+  echo "${plan_src[$i]#./}"
+  echo "  → ${plan_title[$i]}.mp4"
+  echo "  ${plan_genre[$i]} · ${plan_year[$i]} · ${plan_cover_name[$i]}"
+  i=$((i + 1))
+done
+echo
+if ! confirm_yes "Write these names and covers?"; then
+  echo "Cancelled"
+  exit 0
+fi
+
+if command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -is -w $$ >/dev/null 2>&1 &
+  picked "Keeping Mac awake until this script finishes (caffeinate -is)"
+fi
+
+fail=0
+i=0
+total=${#plan_src[@]}
+while [[ $i -lt $total ]]; do
+  src=${plan_src[$i]}
+  title=${plan_title[$i]}
+  year=${plan_year[$i]}
+  genre=${plan_genre[$i]}
+  cover=${plan_cover[$i]}
+  i=$((i + 1))
+  echo
+  dir=$(dirname "$src")
+  dest="$dir/$title.mp4"
+  if [[ -e "$dest" && ! "$src" -ef "$dest" ]]; then
+    echo "Already exists: $(basename "$dest")"
+    fail=$((fail + 1))
+    continue
+  fi
+  echo "Writing tags: $(basename "$src")"
+  EMBED_COVER=""
+  if ! write_tags "$src" "$title" "$year" "$genre" "$cover"; then
+    rm -f "$EMBED_COVER"
+    echo "Could not write tags: $(basename "$src")"
+    fail=$((fail + 1))
+    continue
+  fi
+  if ! verify_tags "$src" "$title" "$genre" "$year" "$EMBED_COVER"; then
+    rm -f "$EMBED_COVER"
+    fail=$((fail + 1))
+    continue
+  fi
+  rm -f "$EMBED_COVER"
+  final=$src
+  if [[ ! "$src" -ef "$dest" ]]; then
+    mv -- "$src" "$dest"
+    final=$dest
+  fi
+  xattr -c -- "$final" 2>/dev/null || true
+  picked "$(basename "$final")"
+done
+
+echo
+if [[ "$fail" -ne 0 ]]; then
+  echo "Done with errors"
+  exit 1
+fi
+picked "Done"
+echo "${C_MUTED}In the TV app, add a file that is not in the library yet and see if it is under Movies.${C_RESET}"

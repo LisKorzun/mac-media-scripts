@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Make a plain txt of paragraphs from Word or DjVu in this folder. Source files stay.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/to-txt.py"
+
+need python3
+need textutil
+
+files=()
+while IFS= read -r -d '' f; do
+  files+=("$f")
+done < <(find . -maxdepth 1 -type f \( -iname '*.doc' -o -iname '*.docx' -o -iname '*.rtf' -o -iname '*.djvu' \) -print0 | sort -z)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "No Word or DjVu files in $(pwd)"
+  exit 1
+fi
+
+banner "Found book files:"
+i=1
+for f in "${files[@]}"; do
+  printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${f#./}"
+  i=$((i + 1))
+done
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}Pick one or more numbers separated by spaces (example: 1 3 5).${C_RESET}"
+
+while true; do
+  printf "${C_PROMPT}Select file number(s) (1-%d):${C_RESET} " "${#files[@]}"
+  read -r pick
+  ok=1
+  # shellcheck disable=SC2206
+  nums=($pick)
+  if [[ ${#nums[@]} -eq 0 ]]; then
+    echo "Enter at least one number."
+    continue
+  fi
+  for n in "${nums[@]}"; do
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || ((n < 1 || n > ${#files[@]})); then
+      echo "Bad number: $n"
+      ok=0
+      break
+    fi
+  done
+  [[ "$ok" -eq 1 ]] && break
+done
+
+banner "Notes"
+echo "${C_MUTED}EPUB uses numbers you can tap. This only tells the script how the book marks them.${C_RESET}"
+echo "  1) asterisks    *, 2*"
+echo "  2) numbers      1. or [1]"
+echo "  3) none"
+while true; do
+  printf "${C_PROMPT}How are notes marked? [3]:${C_RESET} "
+  read -r note_choice
+  note_choice=${note_choice:-3}
+  case "$note_choice" in
+    1) NOTES=stars; break ;;
+    2) NOTES=numbers; break ;;
+    3) NOTES=none; break ;;
+    *) echo "Enter 1, 2, or 3." ;;
+  esac
+done
+picked "Notes: $NOTES"
+
+banner "Preview"
+todo=()
+for n in "${nums[@]}"; do
+  src="${files[$((n - 1))]}"
+  out="${src%.*}.txt"
+  docx="${src%.*}.docx"
+  echo "${src#./}"
+  if [[ -e "$out" && -e "$docx" ]]; then
+    echo "  txt and docx already exist, skipped"
+    continue
+  fi
+  preview=$(python3 "$PY" preview "$src" "$NOTES") || continue
+  count="${preview%%$'\n'*}"
+  count="${count#paragraphs	}"
+  notes_n="${count#*	}"
+  count="${count%%	*}"
+  echo "  $count paragraph(s), $notes_n note(s)"
+  if [[ "$count" -eq 0 ]]; then
+    echo "  nothing to write"
+    continue
+  fi
+  if [[ "$preview" == *$'\n'* ]]; then
+    printf '%s\n' "${preview#*$'\n'}"
+  fi
+  todo+=("$n")
+done
+
+if [[ ${#todo[@]} -eq 0 ]]; then
+  picked "Nothing to write"
+  exit 0
+fi
+
+echo
+printf "${C_PROMPT}Write txt and docx for these files? [Y/n]:${C_RESET} "
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+for n in "${todo[@]}"; do
+  src="${files[$((n - 1))]}"
+  out="${src%.*}.txt"
+  docx="${src%.*}.docx"
+  echo
+  echo "${src#./}"
+  if [[ -e "$out" ]]; then
+    echo "  txt already exists, skipped"
+  else
+    python3 "$PY" write "$src" "$out" "$NOTES"
+  fi
+  if [[ -e "$docx" ]]; then
+    echo "  docx already exists, skipped"
+  else
+    python3 "$PY" write-docx "$src" "$docx" "$NOTES"
+  fi
+done
+
+picked "Done"
