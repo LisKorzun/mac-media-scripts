@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Flatten season folders into one folder: "01. Title.ext" → "S01E01 · Title.ext".
+# Flatten season folders into one folder.
+# "01. Title.ext" or "Show.S01E01.Title….ext" → "S01E01 · Title.ext".
+# No episode title → "S01E01.ext".
 set -euo pipefail
 
 C_RESET=$'\033[0m'
@@ -30,54 +32,213 @@ need python3
 plan_show() {
   python3 - "$1" <<'PY'
 import os, re, sys
-show = sys.argv[1]
-exts = {".mkv", ".mp4", ".mov", ".m4v", ".avi", ".webm", ".ts", ".m2ts"}
-season_re = re.compile(r"^(?:season|сезон|s)[ ._-]*(\d+)(?!\d)", re.I)
-ep_re = re.compile(r"^(\d+)\.\s*(.+)$")
-rows = []
-skipped = []
-for name in sorted(os.listdir(show)):
-    if name.startswith("."):
-        continue
-    path = os.path.join(show, name)
-    if not os.path.isdir(path):
-        continue
-    sm = season_re.match(name)
-    if not sm:
-        continue
-    season = int(sm.group(1))
-    for fn in sorted(os.listdir(path)):
-        if fn.startswith("."):
+
+EXTS = {".mkv", ".mp4", ".mov", ".m4v", ".avi", ".webm", ".ts", ".m2ts"}
+# Season mark anywhere in the folder name: s01, Season 2, сезон 3, Show.S01.
+SEASON_RE = re.compile(
+    r"(?:^|[^0-9A-Za-zА-Яа-яЁё])(?:season|сезон|s)[ ._-]*(\d{1,2})(?!\d)",
+    re.I,
+)
+# "2 сезон" / "02 season"
+SEASON_TAIL_RE = re.compile(
+    r"(?:^|[^0-9A-Za-zА-Яа-яЁё])(\d{1,2})(?!\d)[ ._-]*(?:season|сезон)(?![A-Za-zА-Яа-яЁё])",
+    re.I,
+)
+CODE_RE = re.compile(
+    r"(?:^|[^0-9A-Za-zА-Яа-яЁё])[Ss](\d{1,2})[ ._-]*[Ee](\d{1,3})(?!\d)"
+    r"(?:[ ._-]*[Ee](\d{1,3})(?!\d))?"
+)
+X_RE = re.compile(
+    r"(?:^|[^0-9A-Za-zА-Яа-яЁё])(\d{1,2})x(\d{1,3})(?!\d)",
+    re.I,
+)
+LEAD_RE = re.compile(r"^(\d+)\.\s*(.*)$")
+# Words that end the episode title in a scene name (1080p, WEB-DL, AMZN, …).
+RELEASE_RE = re.compile(
+    r"^(?:"
+    r"\d{3,4}p|4k|uhd|hdr|"
+    r"web|web-?dl|web-?rip|hdtv|hdtvrip|pdtv|"
+    r"blu-?ray|bdrip|brrip|bdremux|remux|dvdrip|hdrip|"
+    r"amzn|amazon|nf|netflix|dsnp|hmax|hulu|atvp|itunes|"
+    r"x264|x265|h264|h265|hevc|avc|xvid|divx|10bit|8bit|"
+    r"aac\d*|ac3|eac3|ddp\d*|dd\d+|dts(?:-hd)?|truehd"
+    r")$",
+    re.I,
+)
+
+
+def season_number(name):
+    m = SEASON_RE.search(name)
+    if m:
+        return int(m.group(1))
+    m = SEASON_TAIL_RE.search(name)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def scene_title(tail):
+    tail = re.sub(r"^(?:[ ._-]*[Ee]\d{1,3}(?!\d))+", "", tail)
+    tail = tail.strip(" ._-")
+    if not tail:
+        return ""
+    parts = [p for p in re.split(r"[._\s]+", tail) if p]
+    kept = []
+    i = 0
+    while i < len(parts):
+        piece = parts[i].strip("-")
+        if not piece:
+            i += 1
             continue
-        src = os.path.join(path, fn)
-        if not os.path.isfile(src):
+        nxt = parts[i + 1].lower() if i + 1 < len(parts) else ""
+        if RELEASE_RE.match(piece) or (piece.lower() in {"h", "x"} and nxt in {"264", "265", "266"}):
+            break
+        kept.append(piece)
+        i += 1
+    return re.sub(r"\s+", " ", " ".join(kept)).strip(" -")
+
+
+def dest_name(season, episode, episode2, title, ext):
+    name = "S%02dE%02d" % (season, episode)
+    if episode2:
+        name += "E%02d" % episode2
+    if title:
+        name += " · " + title
+    return name + ext
+
+
+def parse_episode(fn, folder_season):
+    stem, ext = os.path.splitext(fn)
+    if ext.lower() not in EXTS:
+        return None
+    m = CODE_RE.search(stem)
+    if m:
+        episode2 = int(m.group(3)) if m.group(3) else None
+        title = scene_title(stem[m.end():])
+        return int(m.group(1)), int(m.group(2)), episode2, title, ext
+    m = X_RE.search(stem)
+    if m:
+        title = scene_title(stem[m.end():])
+        return int(m.group(1)), int(m.group(2)), None, title, ext
+    if folder_season is None:
+        return None
+    m = LEAD_RE.match(stem)
+    if not m:
+        return None
+    return folder_season, int(m.group(1)), None, m.group(2).strip(), ext
+
+
+def collect(show):
+    rows = []
+    skipped = []
+    try:
+        names = sorted(os.listdir(show))
+    except OSError:
+        return rows, skipped
+    for name in names:
+        if name.startswith("."):
             continue
-        ext = os.path.splitext(fn)[1].lower()
-        if ext not in exts:
-            skipped.append(src)
+        path = os.path.join(show, name)
+        if not os.path.isdir(path):
             continue
-        em = ep_re.match(fn)
-        if not em:
-            skipped.append(src)
+        season = season_number(name)
+        if season is None:
             continue
-        episode = int(em.group(1))
-        rest = em.group(2)
-        dest = "S%02dE%02d · %s" % (season, episode, rest)
-        rows.append((season, episode, src, dest))
-rows.sort()
-seen = {}
-for season, episode, src, dest in rows:
-    flag = "ok"
-    if dest in seen:
-        flag = "dup"
-    seen[dest] = src
-    sys.stdout.write("%s\t%d\t%d\t%s\t%s\n" % (flag, season, episode, src, dest))
-for src in skipped:
-    sys.stderr.write("skip\t%s\n" % src)
-if not rows:
-    raise SystemExit(2)
+        for fn in sorted(os.listdir(path)):
+            if fn.startswith("."):
+                continue
+            src = os.path.join(path, fn)
+            if not os.path.isfile(src):
+                continue
+            parsed = parse_episode(fn, season)
+            if not parsed:
+                skipped.append(src)
+                continue
+            file_season, episode, episode2, title, ext = parsed
+            dest = dest_name(file_season, episode, episode2, title, ext)
+            rows.append((file_season, episode, src, dest))
+    rows.sort()
+    return rows, skipped
+
+
+def self_test():
+    assert season_number("s01") == 1
+    assert season_number("s04 extra") == 4
+    assert season_number("Season 2") == 2
+    assert season_number("сезон 3") == 3
+    assert season_number("Desperate.Housewives.S01.") == 1
+    assert season_number("Show.Season.01.1080p") == 1
+    assert season_number("Show.Name.S02.1080p.AMZN") == 2
+    assert season_number("2 сезон") == 2
+    assert season_number("Subs") is None
+    assert season_number("Series.01") is None
+
+    def one(folder, fn):
+        got = parse_episode(fn, season_number(folder))
+        assert got, (folder, fn)
+        return dest_name(*got)
+
+    assert one("s01", "01. Пилот.mkv") == "S01E01 · Пилот.mkv"
+    assert one("Season 2", "03. Title.mkv") == "S02E03 · Title.mkv"
+    assert one("s01", "01. Часть 1. Вступление.mkv") == "S01E01 · Часть 1. Вступление.mkv"
+    long = "Desperate.Housewives.S01E12.Every.Day.a.Little.Death.1080p.AMZN.WEB-DL.Rus.Eng_BenderBEST.mkv"
+    assert one("Desperate.Housewives.S01.", long) == "S01E12 · Every Day a Little Death.mkv"
+    who = "Desperate.Housewives.S01E04.Who's.That.Woman.1080p.AMZN.WEB-DL.Rus.Eng_BenderBEST.mkv"
+    assert one("Desperate.Housewives.S01.", who) == "S01E04 · Who's That Woman.mkv"
+    wont = "Desperate.Housewives.S01E17.There.Won't.Be.Trumpets.1080p.AMZN.WEB-DL.mkv"
+    assert one("Desperate.Housewives.S01.", wont) == "S01E17 · There Won't Be Trumpets.mkv"
+    assert one("Show.S02.", "Show.S02E05.1080p.AMZN.WEB-DL.mkv") == "S02E05.mkv"
+    assert one("s01", "Show.S01E01.mkv") == "S01E01.mkv"
+    assert parse_episode("readme.txt", 1) is None
+    assert parse_episode("01.mkv", 1) is None
+
+    import tempfile, shutil
+    root = tempfile.mkdtemp()
+    try:
+        show = os.path.join(root, "Show")
+        season = os.path.join(show, "Desperate.Housewives.S01.")
+        os.makedirs(season)
+        open(os.path.join(season, long), "w").close()
+        legacy = os.path.join(show, "s02")
+        os.makedirs(legacy)
+        open(os.path.join(legacy, "04. Финал.mkv"), "w").close()
+        os.makedirs(os.path.join(show, "Subs"))
+        rows, skipped = collect(show)
+        dests = [row[3] for row in rows]
+        assert dests == [
+            "S01E12 · Every Day a Little Death.mkv",
+            "S02E04 · Финал.mkv",
+        ], dests
+        assert skipped == []
+    finally:
+        shutil.rmtree(root)
+    print("ok")
+
+
+def main(arg):
+    if arg == "--self-test":
+        self_test()
+        return
+    rows, skipped = collect(arg)
+    seen = {}
+    for season, episode, src, dest in rows:
+        flag = "dup" if dest in seen else "ok"
+        seen[dest] = src
+        sys.stdout.write("%s\t%d\t%d\t%s\t%s\n" % (flag, season, episode, src, dest))
+    for src in skipped:
+        sys.stderr.write("skip\t%s\n" % src)
+    if not rows:
+        raise SystemExit(2)
+
+
+main(sys.argv[1])
 PY
 }
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  plan_show --self-test
+  exit $?
+fi
 
 here=$(pwd)
 show=""
@@ -96,7 +257,7 @@ else
   done
   if [[ ${#picks[@]} -eq 0 ]]; then
     echo "No season folders here."
-    echo "cd into the show folder (s01, s02, … inside) or into its parent, then run pack-show."
+    echo "cd into the show folder (s01 or Show.S01 inside) or into its parent, then run pack-show."
     exit 1
   fi
   banner "Shows with season folders:"
@@ -126,7 +287,7 @@ plan_show "$show" >"$plan" 2>"$skips"
 rc=$?
 set -e
 if [[ "$rc" -ne 0 ]]; then
-  echo "No episodes matched (need folders like s01 and files like 01. Title.mkv)."
+  echo "No episodes matched (need a season folder and files like 01. Title.mkv or Show.S01E01.Title.mkv)."
   exit 1
 fi
 
@@ -149,7 +310,7 @@ while IFS=$'\t' read -r flag season episode src dest; do
   fi
 done <"$plan"
 echo "${C_HEAD}${SEP}${C_RESET}"
-echo "${C_MUTED}Episodes: $n. Leading \"NN. \" is replaced with SxxExx · ${C_RESET}"
+echo "${C_MUTED}Episodes: $n. With a title: SxxExx · title. Without a title: SxxExx.${C_RESET}"
 skip_n=0
 if [[ -s "$skips" ]]; then
   while IFS=$'\t' read -r tag path; do
@@ -213,5 +374,5 @@ if [[ "$left" -gt 0 ]]; then
   echo "${C_MUTED}Left in place: $left${C_RESET}"
 fi
 if [[ "$skip_n" -gt 0 ]]; then
-  echo "${C_MUTED}Skipped (not NN. Title): $skip_n${C_RESET}"
+  echo "${C_MUTED}Skipped (not an episode name): $skip_n${C_RESET}"
 fi
