@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fix lookalike letters in text subtitles of ready mp4/mkv. Video and audio are copied.
+# Fix lookalike letters, and turn all-caps English subtitles into sentences.
+# Video and audio are copied.
 set -euo pipefail
 
 C_RESET=$'\033[0m'
@@ -71,6 +72,7 @@ while true; do
 done
 
 banner "Preview"
+echo "${C_MUTED}English all-caps lines become a normal sentence. Russian is left as is.${C_RESET}"
 total_words=0
 for n in "${nums[@]}"; do
   src="${files[$((n - 1))]}"
