@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -146,6 +147,10 @@ def track_tags(path):
     return {str(key).casefold(): str(value).strip() for key, value in tags.items()}
 
 
+def fold(text):
+    return unicodedata.normalize("NFC", text or "").casefold()
+
+
 def bare_index(text, index):
     token = text.strip()
     return token.isdigit() and int(token) == index
@@ -153,21 +158,26 @@ def bare_index(text, index):
 
 def chapter_description(path, index, reserved):
     stem = os.path.splitext(os.path.basename(path))[0]
-    skip = {stem.casefold()}
+    book = fold(reserved[0] if reserved else "")
+    skip = {fold(stem)}
     for word in reserved:
         text = (word or "").strip()
         if text:
-            skip.add(text.casefold())
+            skip.add(fold(text))
     tags = track_tags(path)
     for key in LABEL_KEYS:
         text = tags.get(key, "")
-        if not text or text.casefold() in skip or bare_index(text, index):
+        if not text or fold(text) in skip or bare_index(text, index):
             continue
         match = re.match(r"^0*%d(?:\s*[.\-–—:]|\s+)\s*" % index, text)
         if match:
             text = text[match.end():].strip()
-        if text and not bare_index(text, index):
-            return text
+        if not text or bare_index(text, index):
+            continue
+        # "1886 - Смерть Ивана Ильича 1" repeats the book, it is not a chapter name.
+        if book and book in fold(text):
+            continue
+        return text
     return ""
 
 
