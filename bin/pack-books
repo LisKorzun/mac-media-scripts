@@ -1,0 +1,650 @@
+#!/usr/bin/env bash
+# One author folder → each chosen book in the same shape.
+# Work folder: Title [Narrator]. Inside: the Books file, copies, cover.jpg.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+ABOUT='· Об авторе'
+SOURCES='· исходники'
+US=$'\x1f'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+ask() {
+  local label="$1"
+  local default="$2"
+  local reply
+  printf "${C_PROMPT}%s [%s]:${C_RESET} " "$label" "$default" >&2
+  read -r reply || reply=""
+  if [[ -z "$reply" ]]; then
+    reply="$default"
+  fi
+  printf '%s' "$reply"
+}
+
+is_yes() {
+  case "$1" in
+    y|Y|yes|Yes|YES|д|Д|да|Да|ДА) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PACK_PY="$SCRIPT_DIR/../lib/pack-books.py"
+BOOK_PY="$SCRIPT_DIR/../lib/book-audio.py"
+COVER_PY="$SCRIPT_DIR/../lib/book-cover.py"
+SET_PY="$SCRIPT_DIR/../lib/set-cover.py"
+
+need python3
+need ffmpeg
+need ffprobe
+need exiftool
+
+author_dir=$PWD
+author_folder=$(basename "$PWD")
+shared_portrait=""
+move_sources="y"
+author_full=""
+author_short=""
+genre=""
+plans=()
+
+work_name=()
+work_title=()
+work_narrator=()
+work_loose=()
+work_packed=()
+work_cover=()
+work_pictures=()
+work_picked=()
+
+image_place=()
+image_name=()
+image_default=()
+
+load_works() {
+  work_name=()
+  work_title=()
+  work_narrator=()
+  work_loose=()
+  work_packed=()
+  work_cover=()
+  work_pictures=()
+  work_picked=()
+  local listing name title narrator loose packed cover pictures picked
+  listing=$(python3 "$PACK_PY" works) || return 1
+  while IFS=$'\t' read -r name title narrator loose packed cover pictures picked; do
+    [[ -z "$name" ]] && continue
+    work_name+=("$name")
+    work_title+=("$title")
+    work_narrator+=("$narrator")
+    work_loose+=("$loose")
+    work_packed+=("$packed")
+    work_cover+=("$cover")
+    work_pictures+=("$pictures")
+    work_picked+=("$picked")
+  done <<< "$listing"
+}
+
+load_images() {
+  image_place=()
+  image_name=()
+  image_default=()
+  local listing place name flag
+  listing=$(python3 "$PACK_PY" images) || return 1
+  while IFS=$'\t' read -r place name flag; do
+    [[ -z "$name" ]] && continue
+    image_place+=("$place")
+    image_name+=("$name")
+    image_default+=("$flag")
+  done <<< "$listing"
+}
+
+looks_abbreviated() {
+  local name="$1"
+  local words
+  if [[ "$name" == *.* ]]; then
+    return 0
+  fi
+  words=$(wc -w <<< "$name" | tr -d ' ')
+  [[ "$words" -lt 2 ]]
+}
+
+field_of() {
+  local want="$1"
+  local key value found=""
+  while IFS=$'\t' read -r key value; do
+    if [[ "$key" == "$want" && -z "$found" ]]; then
+      found=$value
+    fi
+  done
+  printf '%s' "$found"
+}
+
+ask_year() {
+  local title="$1"
+  local found
+  echo "${C_MUTED}Looking up the year the work was written…${C_RESET}" >&2
+  found=$(BOOK_TITLE="$title" BOOK_AUTHOR="$author_full" python3 "$BOOK_PY" year | field_of year || true)
+  if [[ "$found" =~ ^[0-9]{4}$ ]]; then
+    found=$(ask "Year written" "$found")
+  else
+    echo "${C_MUTED}No year found. Type the year the work was written.${C_RESET}" >&2
+    found=$(ask "Year written" "")
+  fi
+  while [[ ! "$found" =~ ^[0-9]{4}$ ]]; do
+    echo "Four digits, for example 1863." >&2
+    found=$(ask "Year written" "")
+  done
+  printf '%s' "$found"
+}
+
+choose_index() {
+  local prompt="$1"
+  local default="$2"
+  local count="$3"
+  local reply
+  while true; do
+    reply=$(ask "$prompt" "$default")
+    if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= count )); then
+      printf '%s' "$reply"
+      return 0
+    fi
+    echo "Type a number from 1 to $count." >&2
+  done
+}
+
+move_root_pictures() {
+  local i name
+  for ((i=0; i<${#image_name[@]}; i++)); do
+    [[ "${image_place[$i]}" == root ]] || continue
+    name="${image_name[$i]}"
+    if [[ -e "$ABOUT/$name" ]]; then
+      echo "$ABOUT already has $name. Left the copy in this folder."
+      continue
+    fi
+    mv -n -- "$name" "$ABOUT/$name"
+    picked "Moved $name into $ABOUT"
+  done
+}
+
+ensure_portrait() {
+  local any_work=0 i go count reply default
+  if [[ ! -d "$ABOUT" ]]; then
+    mkdir -- "$ABOUT"
+    picked "Created $ABOUT"
+  fi
+  load_images || exit 1
+  count=${#image_name[@]}
+  if (( count > 0 )); then
+    local root_count=0
+    for ((i=0; i<count; i++)); do
+      if [[ "${image_place[$i]}" == root ]]; then
+        root_count=$((root_count+1))
+      fi
+    done
+    if (( root_count > 0 )); then
+      echo "Pictures are lying in the author folder. They belong in $ABOUT."
+      go=$(ask "Move them into $ABOUT" "y")
+      if is_yes "$go"; then
+        move_root_pictures
+        load_images || exit 1
+        count=${#image_name[@]}
+      fi
+    fi
+  fi
+  for ((i=0; i<${#work_pictures[@]}; i++)); do
+    if [[ "${work_pictures[$i]}" != 0 ]]; then
+      any_work=1
+    fi
+  done
+  if (( count == 0 )) && (( any_work == 0 )); then
+    echo "No portrait in this folder or in $ABOUT."
+    echo "Put one in $ABOUT (jpg, png, …). A file named portrait.jpg is used first."
+    echo "Then run pack-books again."
+    go=$(ask "Continue without a cover" "n")
+    if ! is_yes "$go"; then
+      exit 0
+    fi
+    return 0
+  fi
+  if (( count == 0 )); then
+    echo "${C_MUTED}No shared portrait. A book uses a picture only when that book folder has one.${C_RESET}"
+    return 0
+  fi
+  banner "Portrait"
+  default=1
+  for ((i=0; i<count; i++)); do
+    if [[ "${image_place[$i]}" == about ]]; then
+      echo "$((i+1))  $ABOUT/${image_name[$i]}"
+    else
+      echo "$((i+1))  ${image_name[$i]}"
+    fi
+    if [[ "${image_default[$i]}" == yes ]]; then
+      default=$((i+1))
+    fi
+  done
+  reply=$(choose_index "Portrait" "$default" "$count")
+  i=$((reply-1))
+  if [[ "${image_place[$i]}" == about ]]; then
+    shared_portrait="$author_dir/$ABOUT/${image_name[$i]}"
+  else
+    shared_portrait="$author_dir/${image_name[$i]}"
+  fi
+  picked "Portrait: ${image_name[$i]}"
+}
+
+ask_author() {
+  local wiki words
+  banner "Author"
+  echo "$author_folder"
+  author_full=$author_folder
+  if looks_abbreviated "$author_folder"; then
+    echo "${C_MUTED}Looking up the full name…${C_RESET}"
+    wiki=$(BOOK_AUTHOR="$author_folder" python3 "$BOOK_PY" author-full | field_of full || true)
+    if [[ -n "$wiki" ]]; then
+      author_full=$wiki
+    fi
+  else
+    words=$(wc -w <<< "$author_folder" | tr -d ' ')
+    if [[ "$words" == 2 ]]; then
+      echo "${C_MUTED}The folder has a given name and no patronymic. Type it if you want it in the short name.${C_RESET}"
+    fi
+  fi
+  author_full=$(ask "Author full" "$author_full")
+  while [[ -z "$author_full" ]]; do
+    author_full=$(ask "Author full" "")
+  done
+  author_short=$(BOOK_AUTHOR="$author_full" python3 "$PACK_PY" short)
+  echo "${C_MUTED}File names start with the short name. The author field inside the file is the full name.${C_RESET}"
+  author_short=$(ask "Author short" "$author_short")
+  while [[ -z "$author_short" ]]; do
+    author_short=$(ask "Author short" "")
+  done
+  echo "${C_MUTED}One genre for every book chosen this time.${C_RESET}"
+  genre=$(ask "Genre" "Audiobook")
+  while [[ -z "$genre" ]]; do
+    genre=$(ask "Genre" "Audiobook")
+  done
+  echo "${C_MUTED}After a book is packed, original chapters can move into $SOURCES. They are not deleted.${C_RESET}"
+  move_sources=$(ask "Move original chapters into $SOURCES" "y")
+}
+
+choose_works() {
+  local count=${#work_name[@]}
+  local i label extra choice seen token n bad
+  local -a tokens
+  banner "Books"
+  echo "${C_MUTED}Each folder is one book. Enter packs all of them.${C_RESET}"
+  for ((i=0; i<count; i++)); do
+    if [[ -n "${work_title[$i]}" && -n "${work_narrator[$i]}" ]]; then
+      label="${work_title[$i]} [${work_narrator[$i]}]"
+    else
+      label="${work_name[$i]}"
+    fi
+    echo "$((i+1))  $label"
+    if [[ "$label" != "${work_name[$i]}" ]]; then
+      echo "${C_MUTED}   now: ${work_name[$i]}${C_RESET}"
+    fi
+    if [[ "${work_packed[$i]}" == yes ]]; then
+      extra="packed"
+    elif [[ "${work_loose[$i]}" == 0 ]]; then
+      extra="no chapters in the folder itself"
+    elif [[ "${work_loose[$i]}" == 1 ]]; then
+      extra="1 chapter"
+    else
+      extra="${work_loose[$i]} chapters"
+    fi
+    echo "${C_MUTED}   $extra${C_RESET}"
+  done
+  chosen=()
+  while true; do
+    choice=$(ask "Works" "all")
+    chosen=()
+    case "$choice" in
+      all|All|ALL|"*"|все|Все)
+        for ((i=0; i<count; i++)); do
+          chosen+=("$i")
+        done
+        return 0
+        ;;
+    esac
+    tokens=()
+    IFS=' ,' read -r -a tokens <<< "$choice"
+    seen=" "
+    bad=0
+    for token in "${tokens[@]}"; do
+      [[ -z "$token" ]] && continue
+      if [[ ! "$token" =~ ^[0-9]+$ ]]; then
+        echo "Use numbers, for example 1 3, or all."
+        bad=1
+        break
+      fi
+      n=$((token))
+      if (( n < 1 || n > count )); then
+        echo "No book numbered $token."
+        bad=1
+        break
+      fi
+      if [[ "$seen" == *" $n "* ]]; then
+        continue
+      fi
+      seen+="$n "
+      chosen+=("$((n-1))")
+    done
+    if (( bad == 0 )) && (( ${#chosen[@]} > 0 )); then
+      return 0
+    fi
+    if (( bad == 0 )); then
+      echo "Type at least one number, or all."
+    fi
+  done
+}
+
+choose_work_portrait() {
+  local folder="$1"
+  local names=() name reply i
+  local listing
+  listing=$(python3 "$PACK_PY" pictures "$folder") || return 1
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    names+=("$name")
+  done <<< "$listing"
+  if (( ${#names[@]} == 0 )); then
+    echo "No pictures in this book." >&2
+    return 1
+  fi
+  echo "This book has several pictures." >&2
+  for ((i=0; i<${#names[@]}; i++)); do
+    echo "$((i+1))  ${names[$i]}" >&2
+  done
+  reply=$(choose_index "Portrait" "1" "${#names[@]}")
+  printf '%s' "${names[$((reply-1))]}"
+}
+
+add_plan() {
+  plans+=("$1${US}$2${US}$3${US}$4${US}$5${US}$6${US}$7")
+}
+
+ask_book() {
+  local i="$1"
+  local current="${work_name[$i]}"
+  local title="${work_title[$i]}"
+  local narrator="${work_narrator[$i]}"
+  local loose="${work_loose[$i]}"
+  local packed="${work_packed[$i]}"
+  local cover="${work_cover[$i]}"
+  local pictures="${work_pictures[$i]}"
+  local portrait_name="${work_picked[$i]}"
+  local year="" cover_title="" again go key value folder file reader
+  banner "$current"
+  if [[ "$packed" == yes ]]; then
+    again=$(ask "Already packed. Pack again" "n")
+    if ! is_yes "$again"; then
+      if [[ "$cover" == no ]] && { [[ -n "$portrait_name" || "$pictures" != 0 || -n "$shared_portrait" ]]; }; then
+        if [[ -z "$title" ]]; then
+          title=$current
+        fi
+        if [[ "$pictures" -gt 1 && -z "$portrait_name" ]]; then
+          portrait_name=$(choose_work_portrait "$current") || return 1
+        fi
+        echo "${C_MUTED}Type / where the cover should break. Enter keeps an automatic layout.${C_RESET}"
+        cover_title=$(ask "Cover title" "$title")
+        [[ -z "$cover_title" ]] && cover_title=$title
+        add_plan cover "$current" "$title" "$narrator" "" "$cover_title" "$portrait_name"
+      else
+        picked "Already packed"
+      fi
+      return 0
+    fi
+  fi
+  if [[ "$loose" == 0 ]]; then
+    echo "No chapters in this folder. Put the audio files here, not in a subfolder."
+    return 0
+  fi
+  title=$(ask "Book title" "$title")
+  while [[ -z "$title" ]]; do
+    title=$(ask "Book title" "")
+  done
+  narrator=$(ask "Narrator" "$narrator")
+  while [[ -z "$narrator" ]]; do
+    narrator=$(ask "Narrator" "")
+  done
+  year=$(ask_year "$title")
+  if [[ "$pictures" -gt 1 && -z "$portrait_name" ]]; then
+    portrait_name=$(choose_work_portrait "$current") || return 1
+  fi
+  cover_title=$title
+  if [[ -n "$portrait_name" || -n "$shared_portrait" ]]; then
+    echo "${C_MUTED}Type / where the cover should break. Enter keeps an automatic layout.${C_RESET}"
+    cover_title=$(ask "Cover title" "$title")
+    [[ -z "$cover_title" ]] && cover_title=$title
+  else
+    echo "${C_MUTED}No portrait for this book. The cover will be skipped.${C_RESET}"
+  fi
+  folder=""
+  file=""
+  reader=""
+  local preview_out
+  preview_out=$(BOOK_TITLE="$title" BOOK_AUTHOR="$author_short" BOOK_NARRATOR="$narrator" BOOK_YEAR="$year" python3 "$PACK_PY" preview) || return 1
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      folder) folder=$value ;;
+      file) file=$value ;;
+      reader) reader=$value ;;
+    esac
+  done <<< "$preview_out"
+  echo "Folder      $folder"
+  echo "In the file $reader"
+  echo "File        $file"
+  go=$(ask "Pack this book" "y")
+  if ! is_yes "$go"; then
+    return 0
+  fi
+  add_plan full "$current" "$title" "$narrator" "$year" "$cover_title" "$portrait_name"
+}
+
+place_book() {
+  local current="$1"
+  local title="$2"
+  local narrator="$3"
+  local line key value
+  if [[ -z "$title" || -z "$narrator" ]]; then
+    cd -- "$current"
+    return 0
+  fi
+  line=$(BOOK_TITLE="$title" BOOK_NARRATOR="$narrator" python3 "$PACK_PY" place "$current") || exit 1
+  key=${line%%$'\t'*}
+  value=${line#*$'\t'}
+  case "$key" in
+    keep)
+      cd -- "$value"
+      ;;
+    rename)
+      mv -- "$current" "$value"
+      picked "Folder: $value"
+      cd -- "$value"
+      ;;
+    clash)
+      echo "A folder named \"$value\" is already here."
+      exit 1
+      ;;
+    *)
+      echo "Could not choose the folder name."
+      exit 1
+      ;;
+  esac
+}
+
+apply_cover() {
+  local portrait="$1"
+  local cover_title="$2"
+  if [[ -z "$portrait" ]]; then
+    echo "No portrait. Cover skipped."
+    return 0
+  fi
+  if [[ ! -f "$portrait" ]]; then
+    echo "Portrait file is missing: $portrait"
+    return 1
+  fi
+  echo "Building the cover."
+  PORTRAIT="$portrait" BOOK_TITLE="$cover_title" python3 "$COVER_PY" write
+  python3 "$SET_PY" write
+}
+
+move_originals() {
+  local sources=() name left dest
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    sources+=("$name")
+  done < <(python3 "$PACK_PY" sources)
+  if ! is_yes "$move_sources"; then
+    return 0
+  fi
+  if (( ${#sources[@]} == 0 )); then
+    return 0
+  fi
+  dest="$author_dir/$SOURCES/$(basename "$PWD")"
+  mkdir -p -- "$dest"
+  left=0
+  for name in "${sources[@]}"; do
+    [[ -e "$name" ]] || continue
+    mv -n -- "$name" "$dest/"
+    if [[ -e "$name" ]]; then
+      left=$((left+1))
+    fi
+  done
+  if (( left > 0 )); then
+    echo "Some original files were already in $SOURCES and stayed in the book folder."
+  else
+    picked "Original chapters are in $SOURCES"
+  fi
+}
+
+encode_book() (
+  local mode="$1"
+  local current="$2"
+  local title="$3"
+  local narrator="$4"
+  local year="$5"
+  local cover_title="$6"
+  local portrait_name="$7"
+  local portrait=""
+  place_book "$current" "$title" "$narrator"
+  if [[ -n "$portrait_name" && -f "$portrait_name" ]]; then
+    portrait="$PWD/$portrait_name"
+  elif [[ -n "$shared_portrait" ]]; then
+    portrait="$shared_portrait"
+  fi
+  if [[ "$mode" == full ]]; then
+    echo "${C_MUTED}Encoding takes a while. A running time on the screen is progress.${C_RESET}"
+    BOOK_TITLE="$title" \
+      BOOK_AUTHOR="$author_short" \
+      BOOK_AUTHOR_FULL="$author_full" \
+      BOOK_NARRATOR="$narrator" \
+      BOOK_GENRE="$genre" \
+      BOOK_YEAR="$year" \
+      python3 "$BOOK_PY" m4b
+    BOOK_TITLE="$title" \
+      BOOK_AUTHOR="$author_short" \
+      BOOK_AUTHOR_FULL="$author_full" \
+      BOOK_NARRATOR="$narrator" \
+      BOOK_GENRE="$genre" \
+      BOOK_YEAR="$year" \
+      python3 "$BOOK_PY" mp3
+  fi
+  apply_cover "$portrait" "$cover_title"
+  move_originals
+)
+
+run_plans() {
+  local plan mode current title narrator year cover_title portrait_name
+  local total=${#plans[@]} n=0 ok=0
+  caffeinate -is -w $$ >/dev/null 2>&1 &
+  for plan in "${plans[@]}"; do
+    n=$((n+1))
+    IFS=$'\x1f' read -r mode current title narrator year cover_title portrait_name <<< "$plan"
+    banner "$n / $total  ${title:-$current}"
+    if encode_book "$mode" "$current" "$title" "$narrator" "$year" "$cover_title" "$portrait_name"; then
+      ok=$((ok+1))
+      picked "Packed"
+    else
+      echo "This book stopped. Its chapters are still in the folder. Run pack-books again."
+    fi
+  done
+  if (( ok > 0 )); then
+    echo
+    echo "${C_MUTED}The TV gets the folder named like the .m4b file. Apple Books shows a new file after you remove the old book from the library and add this one.${C_RESET}"
+  fi
+}
+
+where=$(python3 "$PACK_PY" where) || exit 1
+case "$where" in
+  book)
+    echo "This folder is one book."
+    echo "Open the author folder, one level up, and run pack-books there."
+    exit 1
+    ;;
+  empty)
+    echo "No book folders here."
+    echo "Run pack-books in the author folder. Each book is its own folder inside it."
+    exit 1
+    ;;
+esac
+
+banner "Author"
+echo "$author_folder"
+echo "${C_MUTED}Each chosen folder becomes Title [Narrator]/.${C_RESET}"
+echo "${C_MUTED}Inside: the Books file, a folder of copies with the same name, and cover.jpg.${C_RESET}"
+
+load_works || exit 1
+if (( ${#work_name[@]} == 0 )); then
+  echo "No book folders here."
+  exit 1
+fi
+
+ensure_portrait
+if [[ -n "$shared_portrait" ]]; then
+  python3 "$COVER_PY" check-font >/dev/null
+else
+  need_font=0
+  for ((i=0; i<${#work_pictures[@]}; i++)); do
+    if [[ "${work_pictures[$i]}" != 0 ]]; then
+      need_font=1
+    fi
+  done
+  if (( need_font == 1 )); then
+    python3 "$COVER_PY" check-font >/dev/null
+  fi
+fi
+
+ask_author
+choose_works
+for index in "${chosen[@]}"; do
+  ask_book "$index"
+done
+
+if (( ${#plans[@]} == 0 )); then
+  echo "Nothing to pack."
+  exit 0
+fi
+
+run_plans

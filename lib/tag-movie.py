@@ -623,9 +623,9 @@ def kp_episode_titles(page):
         en = ""
         if english and (not nxt or english.start() < nxt.start()):
             en = plain_html(english.group(1))
-        title = episode_title(plain_html(match.group(3)), en)
-        if title:
-            found[(int(match.group(1)), int(match.group(2)))] = title
+        ru = plain_html(match.group(3))
+        if episode_title(ru, en):
+            found[(int(match.group(1)), int(match.group(2)))] = (ru, en)
     return found
 
 
@@ -650,7 +650,7 @@ def kp_season_counts(page):
     return found
 
 
-def kp_notes(film_id, season, wanted):
+def kp_notes(film_id, season, wanted, titles_only=False):
     counts = {}
     notes = {}
     titles = {}
@@ -659,11 +659,13 @@ def kp_notes(film_id, season, wanted):
         counts = kp_season_counts(page)
         all_titles = kp_episode_titles(page)
         for number in wanted:
-            title = all_titles.get((int(season), int(number)), "")
+            title = all_titles.get((int(season), int(number)))
             if title:
                 titles[number] = title
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         counts = {}
+    if titles_only:
+        return notes, counts, titles
     for number in wanted:
         try:
             page = kp_get(
@@ -900,10 +902,11 @@ def sub_episodes(slug):
             number = int(row.get("episode_number"))
         except (TypeError, ValueError):
             continue
-        title = episode_title(row.get("ruTitle") or row.get("displayTitle"), row.get("title"))
+        ru_title = (row.get("ruTitle") or row.get("displayTitle") or "").strip()
+        en_title = (row.get("title") or "").strip()
         text = sub_text(row)
-        if title or text:
-            found[(season, number)] = (title, text)
+        if episode_title(ru_title, en_title) or text:
+            found[(season, number)] = (ru_title, en_title, text)
     return found
 
 
@@ -913,14 +916,14 @@ def sub_fill(ru, en, year, season, wanted, notes, titles):
         return
     episodes = sub_episodes(show.get("slug"))
     for number in wanted:
-        title, text = episodes.get((int(season), int(number)), ("", ""))
-        if title:
-            titles[number] = title
+        ru_title, en_title, text = episodes.get((int(season), int(number)), ("", "", ""))
+        if episode_title(ru_title, en_title):
+            titles[number] = (ru_title, en_title)
         if text:
             notes[number] = text
 
 
-def episode_notes(film_id, season, wanted, ru, en, year):
+def episode_notes(film_id, season, wanted, ru, en, year, titles_only=False):
     notes = {}
     titles = {}
     counts = {}
@@ -928,21 +931,23 @@ def episode_notes(film_id, season, wanted, ru, en, year):
         sub_fill(ru, en, year, season, wanted, notes, titles)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         pass
-    need_text = [number for number in wanted if number not in notes]
+    need_text = [] if titles_only else [number for number in wanted if number not in notes]
     need_title = [number for number in wanted if number not in titles]
     if (need_text or need_title) and str(film_id).isdigit():
         try:
-            kp_text, counts, kp_titles = kp_notes(film_id, season, wanted)
+            kp_text, counts, kp_titles = kp_notes(film_id, season, wanted, titles_only)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             kp_text, counts, kp_titles = {}, {}, {}
         for number in need_title:
-            title = kp_titles.get(number, "")
-            if title:
+            title = kp_titles.get(number)
+            if title and episode_title(title[0], title[1]):
                 titles[number] = title
         for number in need_text:
             text = kp_text.get(number, "")
             if text:
                 notes[number] = text
+    if titles_only:
+        return notes, titles
     missing = [number for number in wanted if number not in notes]
     if missing and (ru or en):
         try:
@@ -1083,21 +1088,46 @@ def main():
         if cmd == "show-genre" and len(sys.argv) == 4:
             print(wiki_genre(sys.argv[2], sys.argv[3], "show") or "NONE")
             return
-        if cmd == "episode-notes" and len(sys.argv) == 8:
+        if cmd == "episode-notes" and len(sys.argv) in (8, 9):
+            titles_only = False
+            if len(sys.argv) == 9:
+                if sys.argv[8] != "names":
+                    raise SystemExit(2)
+                titles_only = True
             wanted = []
             for piece in sys.argv[4].split(","):
                 piece = piece.strip()
                 if piece.isdigit():
                     wanted.append(int(piece))
             notes, titles = episode_notes(
-                sys.argv[2], int(sys.argv[3]), wanted, sys.argv[5], sys.argv[6], sys.argv[7]
+                sys.argv[2],
+                int(sys.argv[3]),
+                wanted,
+                sys.argv[5],
+                sys.argv[6],
+                sys.argv[7],
+                titles_only,
             )
+            if titles_only:
+                numbers = sorted(
+                    number
+                    for number, pair in titles.items()
+                    if episode_title(pair[0], pair[1])
+                )
+                if not numbers:
+                    print("NONE")
+                    return
+                for number in numbers:
+                    ru_title, en_title = titles[number]
+                    sys.stdout.write("%d\t%s\t%s\n" % (number, cell(ru_title), cell(en_title)))
+                return
             numbers = sorted(set(notes) | set(titles))
             if not numbers:
                 print("NONE")
                 return
             for number in numbers:
-                title = titles.get(number, "").replace("\t", " ")
+                ru_title, en_title = titles.get(number, ("", ""))
+                title = episode_title(ru_title, en_title).replace("\t", " ")
                 line = notes.get(number, "").replace("\t", " ")
                 sys.stdout.write("%d\t%s\t%s\n" % (number, title, line))
             return

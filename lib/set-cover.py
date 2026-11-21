@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Write cover.jpg into the .m4b and into MP3/*.mp3. Audio is copied.
+# Write cover.jpg into the .m4b and into the chapter folder of the same name. Audio is copied.
 import json
 import os
 import re
@@ -67,18 +67,44 @@ def m4b_files(folder):
     return found
 
 
-def mp3_files(folder):
-    dest = os.path.join(folder, "MP3")
-    if not os.path.isdir(dest):
-        return []
+def mp3s_in(folder):
     found = []
-    for name in os.listdir(dest):
+    for name in os.listdir(folder):
         if name.startswith("."):
             continue
-        path = os.path.join(dest, name)
+        path = os.path.join(folder, name)
         if os.path.isfile(path) and name.casefold().endswith(".mp3"):
             found.append(path)
     found.sort(key=lambda path: natural_key(os.path.basename(path)))
+    return found
+
+
+def mp3_dirs(folder):
+    stems = {os.path.splitext(os.path.basename(path))[0] for path in m4b_files(folder)}
+    named = []
+    legacy = []
+    others = []
+    for name in os.listdir(folder):
+        if name.startswith("."):
+            continue
+        path = os.path.join(folder, name)
+        if not os.path.isdir(path) or not mp3s_in(path):
+            continue
+        if name in stems:
+            named.append(path)
+        elif name == "MP3":
+            legacy.append(path)
+        else:
+            others.append(path)
+    chosen = named or legacy or others
+    chosen.sort(key=lambda path: natural_key(os.path.basename(path)))
+    return chosen
+
+
+def mp3_files(folder):
+    found = []
+    for path in mp3_dirs(folder):
+        found.extend(mp3s_in(path))
     return found
 
 
@@ -166,6 +192,8 @@ def cmd_plan():
     print("cover\t%s" % (os.path.basename(cover) if cover else ""))
     for path in m4b_files(folder):
         print("m4b\t%s" % os.path.basename(path))
+    for path in mp3_dirs(folder):
+        print("dir\t%s" % os.path.basename(path))
     print("mp3\t%d" % len(mp3_files(folder)))
 
 
@@ -225,7 +253,7 @@ def cmd_write():
     books = m4b_files(folder)
     tracks = mp3_files(folder)
     if not books and not tracks:
-        die("No .m4b and no MP3 folder yet")
+        die("No .m4b and no chapter folder yet")
     jpeg, jpeg_path = prepare_jpeg(cover)
     extra = jpeg_path != cover
     failed = []

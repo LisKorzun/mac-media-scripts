@@ -34,12 +34,14 @@ need exiftool
 
 cover=""
 m4bs=()
+dirs=()
 mp3_count=0
 plan_out=$(python3 "$PY" plan) || exit 1
 while IFS=$'\t' read -r key value; do
   case "$key" in
     cover) cover=$value ;;
     m4b) m4bs+=("$value") ;;
+    dir) dirs+=("$value") ;;
     mp3) mp3_count=$value ;;
   esac
 done <<<"$plan_out"
@@ -52,7 +54,7 @@ if [[ -z "$cover" ]]; then
 fi
 if [[ ${#m4bs[@]} -eq 0 && "$mp3_count" == "0" ]]; then
   echo "No audiobook in this folder yet."
-  echo "${C_MUTED}to-m4b makes the Books file. to-mp3 makes the MP3 folder.${C_RESET}"
+  echo "${C_MUTED}to-m4b makes the Books file. to-mp3 makes a folder with the same name.${C_RESET}"
   exit 1
 fi
 echo "${C_MUTED}Picture: ${cover}. Sound is copied, not re-encoded. Run again to replace it.${C_RESET}"
@@ -65,12 +67,17 @@ else
     printf "${C_PROMPT}M4B${C_RESET} %s\n" "$name"
   done
 fi
-if [[ "$mp3_count" == "0" ]]; then
+if [[ ${#dirs[@]} -eq 0 ]]; then
   echo "${C_MUTED}MP3: none${C_RESET}"
-elif [[ "$mp3_count" == "1" ]]; then
-  echo "${C_MUTED}MP3: 1 file${C_RESET}"
 else
-  echo "${C_MUTED}MP3: ${mp3_count} files${C_RESET}"
+  for name in "${dirs[@]}"; do
+    printf "${C_PROMPT}MP3${C_RESET} %s\n" "$name"
+  done
+  if [[ "$mp3_count" == "1" ]]; then
+    echo "${C_MUTED}1 file${C_RESET}"
+  else
+    echo "${C_MUTED}${mp3_count} files${C_RESET}"
+  fi
 fi
 
 echo

@@ -7,12 +7,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac"}
 M4B_RATE = "96k"
 MP3_RATE = "128k"
 # A chapter name already stored in the file. The filename is not one of these.
 LABEL_KEYS = ("title", "subtitle", "description", "comment", "synopsis")
+DOT = " · "
+WRITING_WORD = re.compile(r"(написа\w*|созда\w*|wrote|written)", re.IGNORECASE)
+YEAR_WORD = re.compile(r"\b(1[0-9]{3}|20[0-2][0-9])\b")
 
 
 def die(message):
@@ -81,6 +87,20 @@ def safe_filename(title):
     return name or "book"
 
 
+def book_heading(author, title, year):
+    return "%s%s%s%s%s" % (author, DOT, title, DOT, year)
+
+
+def book_filename(author, title, narrator, year):
+    if narrator:
+        return "%s%s%s [%s]%s%s" % (author, DOT, title, narrator, DOT, year)
+    return book_heading(author, title, year)
+
+
+def book_dirname(author, title, narrator, year):
+    return safe_filename(book_filename(author, title, narrator, year))
+
+
 def meta_escape(text):
     return "".join("\\" + ch if ch in "\\=;#\n\r" else ch for ch in text)
 
@@ -126,7 +146,12 @@ def track_tags(path):
     return {str(key).casefold(): str(value).strip() for key, value in tags.items()}
 
 
-def chapter_label(path, index, reserved):
+def bare_index(text, index):
+    token = text.strip()
+    return token.isdigit() and int(token) == index
+
+
+def chapter_description(path, index, reserved):
     stem = os.path.splitext(os.path.basename(path))[0]
     skip = {stem.casefold()}
     for word in reserved:
@@ -136,9 +161,20 @@ def chapter_label(path, index, reserved):
     tags = track_tags(path)
     for key in LABEL_KEYS:
         text = tags.get(key, "")
-        if text and text.casefold() not in skip:
+        if not text or text.casefold() in skip or bare_index(text, index):
+            continue
+        match = re.match(r"^0*%d(?:\s*[.\-–—:]|\s+)\s*" % index, text)
+        if match:
+            text = text[match.end():].strip()
+        if text and not bare_index(text, index):
             return text
-    return str(index)
+    return ""
+
+
+def contents_line(index, total, name, year):
+    width = max(2, len(str(total)))
+    number = "%0*d" % (width, index)
+    return "%s. %s%s%s" % (number, safe_filename(name), DOT, year)
 
 
 def duration_ms(path):
@@ -182,10 +218,116 @@ def book_fields():
     author = env("BOOK_AUTHOR")
     narrator = env("BOOK_NARRATOR")
     genre = env("BOOK_GENRE") or "Audiobook"
-    author_sort = env("BOOK_SORT") or sort_key(author)
+    year = env("BOOK_YEAR")
+    author_full = env("BOOK_AUTHOR_FULL") or author
     if not title or not author:
         die("Book title and author are required")
-    return title, author, author_sort, narrator, genre
+    if not re.fullmatch(r"\d{4}", year):
+        die("Year is required")
+    return title, author, author_full, narrator, genre, year
+
+
+def wiki_search(query):
+    params = urllib.parse.urlencode({
+        "action": "query",
+        "format": "json",
+        "list": "search",
+        "srsearch": query,
+        "srlimit": "8",
+        "srprop": "snippet",
+    })
+    request = urllib.request.Request(
+        "https://ru.wikipedia.org/w/api.php?" + params,
+        headers={"User-Agent": "mac-media-scripts/1.0", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        data = json.loads(response.read().decode())
+    found = []
+    for item in data.get("query", {}).get("search", []):
+        plain = re.sub(r"<[^>]+>", "", item.get("snippet") or "")
+        plain = plain.replace("&nbsp;", " ").replace("&quot;", '"').strip()
+        found.append(((item.get("title") or "").strip(), plain))
+    return found
+
+
+def wiki_snippets(query):
+    return [snippet for _title, snippet in wiki_search(query) if snippet]
+
+
+def name_parts(name):
+    return [part.strip(",.") for part in name.split() if part.strip(",.")]
+
+
+def surname_given(name):
+    parts = name_parts(name)
+    if len(parts) < 2:
+        return name.strip()
+    return "%s %s" % (parts[-1], parts[0])
+
+
+def author_full_name(author):
+    surname = sort_key(author)
+    if not surname:
+        return ""
+    try:
+        hits = wiki_search(surname)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return ""
+    best = ""
+    for title, _snippet in hits:
+        if "," not in title:
+            continue
+        plain = title.split("(")[0]
+        plain = re.sub(r"\s+", " ", plain.replace(",", " ")).strip(" .")
+        words = plain.split()
+        if len(words) < 2 or len(words) > 4:
+            continue
+        if words[0].casefold() != surname.casefold():
+            continue
+        if any("." in word or not word[:1].isupper() for word in words):
+            continue
+        if len(words) > len(best.split()):
+            best = plain
+    return best
+
+
+def cmd_author_full():
+    print("full\t%s" % author_full_name(env("BOOK_AUTHOR")))
+
+
+def year_written(author, title):
+    title_key = title.casefold()
+    queries = ['"%s" %s' % (title, author), "%s %s" % (title, author)]
+    try:
+        snippets = []
+        for query in queries:
+            snippets.extend(wiki_snippets(query))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return ""
+    hits = []
+    for plain in snippets:
+        years = list(YEAR_WORD.finditer(plain))
+        for index, match in enumerate(years):
+            next_start = years[index + 1].start() if index + 1 < len(years) else len(plain)
+            forward = plain[match.start():next_start]
+            before = plain[max(0, match.start() - 25):match.start()]
+            if title_key not in forward.casefold() and title_key not in before.casefold():
+                continue
+            if not WRITING_WORD.search(forward) and not WRITING_WORD.search(before):
+                continue
+            # A year only borrows the previous sentence when the verb or the title
+            # actually sits next to this year, not entirely before it.
+            if title_key in forward.casefold() or WRITING_WORD.search(forward):
+                hits.append(match.group(1))
+    if not hits:
+        return ""
+    return max(set(hits), key=hits.count)
+
+
+def cmd_year():
+    year = year_written(env("BOOK_AUTHOR"), env("BOOK_TITLE"))
+    print("year\t%s" % year)
+    print("note\t%s" % ("written" if year else ""))
 
 
 def cmd_guess():
@@ -224,31 +366,36 @@ def cmd_files():
         print("%d\t%s" % (index, os.path.basename(path)))
 
 
-def write_m4b(folder, files, title, author, author_sort, narrator, genre):
+def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
     info = same_audio(files)
-    out_name = safe_filename(title) + ".m4b"
+    heading = book_heading(author, title, year)
+    person = surname_given(narrator or author)
+    person_sort = name_parts(narrator or author)
+    person_sort = person_sort[-1] if person_sort else person
+    out_name = book_dirname(author, title, narrator, year) + ".m4b"
     final = os.path.join(folder, out_name)
     durations = [duration_ms(path) for path in files]
     cursor = 0
     lines = [
         ";FFMETADATA1",
-        "title=%s" % meta_escape(title),
-        "album=%s" % meta_escape(title),
-        "artist=%s" % meta_escape(author),
-        "album_artist=%s" % meta_escape(author),
+        "title=%s" % meta_escape(heading),
+        "album=%s" % meta_escape(heading),
+        "artist=%s" % meta_escape(person),
+        "album_artist=%s" % meta_escape(person),
+        "composer=%s" % meta_escape(person),
         "genre=%s" % meta_escape(genre),
     ]
-    if narrator:
-        lines.append("composer=%s" % meta_escape(narrator))
-    reserved = (title, author, narrator, genre)
+    reserved = (title, heading, author, narrator, genre, year)
+    total = len(files)
     for index, (path, length) in enumerate(zip(files, durations), 1):
         end = cursor + length
+        name = chapter_description(path, index, reserved) or title
         lines.append("")
         lines.append("[CHAPTER]")
         lines.append("TIMEBASE=1/1000")
         lines.append("START=%d" % cursor)
         lines.append("END=%d" % end)
-        lines.append("title=%s" % meta_escape(chapter_label(path, index, reserved)))
+        lines.append("title=%s" % meta_escape(contents_line(index, total, name, year)))
         cursor = end
     concat = []
     for path in files:
@@ -282,29 +429,35 @@ def write_m4b(folder, files, title, author, author_sort, narrator, genre):
     if shutil.which("exiftool"):
         sort_cmd = [
             "exiftool", "-overwrite_original",
-            "-ItemList:SortArtist=%s" % author_sort,
-            "-ItemList:SortAlbumArtist=%s" % author_sort,
-            "-ItemList:SortName=%s" % title,
-            "-ItemList:SortAlbum=%s" % title,
+            "-ItemList:Author=%s" % author_full,
+            "-ItemList:Artist=%s" % person,
+            "-ItemList:AlbumArtist=%s" % person,
+            "-ItemList:Performer=%s" % person,
+            "-ItemList:Narrator=%s" % person,
+            "-ItemList:Composer=%s" % person,
+            "-XMP:Artist=%s" % person,
+            "-XMP:Composer=%s" % person,
+            "-ItemList:SortArtist=%s" % person_sort,
+            "-ItemList:SortAlbumArtist=%s" % person_sort,
+            "-ItemList:SortName=%s" % heading,
+            "-ItemList:SortAlbum=%s" % heading,
+            "-ItemList:SortComposer=%s" % person_sort,
+            final,
         ]
-        if narrator:
-            sort_cmd.append("-ItemList:SortComposer=%s" % last_word(narrator))
-        sort_cmd.append(final)
         if run(sort_cmd) != 0:
             die("exiftool could not write sort fields")
         clear_xattr(final)
     else:
-        print("exiftool not found: author sort was not written", file=sys.stderr)
+        print("exiftool not found: sort fields were not written", file=sys.stderr)
     print(out_name, flush=True)
 
 
-def output_name(index, total, stem):
-    width = max(2, len(str(total)))
-    return "%0*d · %s.mp3" % (width, index, stem)
+def track_filename(index, total, title, year):
+    return contents_line(index, total, title, year) + ".mp3"
 
 
-def write_mp3(folder, files, title, author, author_sort, narrator, genre):
-    dest_dir = os.path.join(folder, "MP3")
+def write_mp3(folder, files, title, author, author_full, narrator, genre, year):
+    dest_dir = os.path.join(folder, book_dirname(author, title, narrator, year))
     os.makedirs(dest_dir, exist_ok=True)
     for name in os.listdir(dest_dir):
         if name.startswith("."):
@@ -314,9 +467,18 @@ def write_mp3(folder, files, title, author, author_sort, narrator, genre):
             os.remove(path)
     total = len(files)
     failed = []
+    heading = book_heading(author, title, year)
+    person = surname_given(narrator or author)
+    person_sort = name_parts(narrator or author)
+    person_sort = person_sort[-1] if person_sort else person
+    reserved = (title, heading, author, narrator, genre, year)
+    first_name = ""
     for index, path in enumerate(files, 1):
-        stem = os.path.splitext(os.path.basename(path))[0]
-        dest = os.path.join(dest_dir, output_name(index, total, stem))
+        name = chapter_description(path, index, reserved) or title
+        label = contents_line(index, total, name, year)
+        dest = os.path.join(dest_dir, track_filename(index, total, title, year))
+        if index == 1:
+            first_name = os.path.basename(dest)
         codec = audio_info(path)[0]
         cmd = [
             "ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-y",
@@ -328,21 +490,22 @@ def write_mp3(folder, files, title, author, author_sort, narrator, genre):
             cmd += ["-c:a", "libmp3lame", "-b:a", MP3_RATE, "-ac", "2", "-ar", "44100"]
         cmd += [
             "-id3v2_version", "4",
-            "-metadata", "title=%s" % stem,
-            "-metadata", "album=%s" % title,
-            "-metadata", "artist=%s" % author,
-            "-metadata", "album_artist=%s" % author,
-            "-metadata", "artist-sort=%s" % author_sort,
-            "-metadata", "album-sort=%s" % title,
-            "-metadata", "title-sort=%s" % stem,
+            "-metadata", "title=%s" % label,
+            "-metadata", "album=%s" % heading,
+            "-metadata", "artist=%s" % person,
+            "-metadata", "album_artist=%s" % person,
+            "-metadata", "artist-sort=%s" % person_sort,
+            "-metadata", "album-sort=%s" % heading,
+            "-metadata", "title-sort=%s" % label,
+            "-metadata", "author=%s" % author_full,
+            "-metadata", "narrator=%s" % person,
             "-metadata", "track=%d/%d" % (index, total),
             "-metadata", "genre=%s" % genre,
         ]
-        if narrator:
-            cmd += [
-                "-metadata", "composer=%s" % narrator,
-                "-metadata", "performer=%s" % narrator,
-            ]
+        cmd += [
+            "-metadata", "composer=%s" % person,
+            "-metadata", "performer=%s" % person,
+        ]
         cmd.append(dest)
         print("[%d/%d] %s" % (index, total, os.path.basename(dest)), flush=True)
         if run(cmd) != 0:
@@ -353,7 +516,7 @@ def write_mp3(folder, files, title, author, author_sort, narrator, genre):
         clear_xattr(dest)
     if failed:
         die("Failed: %s" % ", ".join(failed))
-    print("MP3/%s" % output_name(1, total, os.path.splitext(os.path.basename(files[0]))[0]))
+    print("%s/%s" % (os.path.basename(dest_dir), first_name))
 
 
 def has_encoder(name):
@@ -363,7 +526,7 @@ def has_encoder(name):
 
 def main():
     if len(sys.argv) < 2:
-        die("usage: book-audio.py guess|files|sort-key|m4b|mp3")
+        die("usage: book-audio.py guess|files|sort-key|year|author-full|reader|m4b|mp3")
     action = sys.argv[1]
     if action == "guess":
         cmd_guess()
@@ -374,17 +537,26 @@ def main():
     if action == "sort-key":
         cmd_sort_key()
         return
+    if action == "year":
+        cmd_year()
+        return
+    if action == "author-full":
+        cmd_author_full()
+        return
+    if action == "reader":
+        print(surname_given(" ".join(sys.argv[2:])))
+        return
     if action not in {"m4b", "mp3"}:
         die("unknown action: %s" % action)
     folder = os.getcwd()
     files = chapters(folder)
     if not files:
         die("No audio files in %s" % folder)
-    title, author, author_sort, narrator, genre = book_fields()
+    title, author, author_full, narrator, genre, year = book_fields()
     if action == "m4b":
-        write_m4b(folder, files, title, author, author_sort, narrator, genre)
+        write_m4b(folder, files, title, author, author_full, narrator, genre, year)
     else:
-        write_mp3(folder, files, title, author, author_sort, narrator, genre)
+        write_mp3(folder, files, title, author, author_full, narrator, genre, year)
 
 
 if __name__ == "__main__":

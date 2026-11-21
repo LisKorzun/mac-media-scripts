@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Write show, season, episode, year, genre, one cover, and each episode's own description into mp4 files.
+# mp4: write show, season, episode, year, genre, one cover, and each episode's own description.
 # Episode title and description: 2sub.movie first, then Kinopoisk, then kino-teatr.ru.
-# File names stay as they are. Video and audio are not reencoded.
+# mp4 names stay as they are. Video and audio are not reencoded.
+# mkv: rename to "S01E01 · Episode title". One language for the folder, Russian or English.
+# Nothing is written inside the mkv.
 set -euo pipefail
 
 C_RESET=$'\033[0m'
@@ -466,8 +468,27 @@ note_text=()
 title_key=()
 title_text=()
 
+split_tabs() {
+  local line=$1 rest
+  F1=""
+  F2=""
+  F3=""
+  if [[ "$line" != *$'\t'* ]]; then
+    F1=$line
+    return 0
+  fi
+  F1=${line%%$'\t'*}
+  rest=${line#*$'\t'}
+  if [[ "$rest" != *$'\t'* ]]; then
+    F2=$rest
+    return 0
+  fi
+  F2=${rest%%$'\t'*}
+  F3=${rest#*$'\t'}
+}
+
 load_notes() {
-  local season=$1 en id out num title text nums="" i=0
+  local season=$1 en id out line nums="" i=0
   en=${PROP_EN:--}
   [[ -z "$en" ]] && en="-"
   id=${PROP_ID:--}
@@ -481,15 +502,17 @@ load_notes() {
   if ! out=$(python3 "$PY" episode-notes "$id" "$season" "$nums" "$PROP_RU" "$en" "$PROP_YEAR" 2>/dev/null); then
     return 0
   fi
-  while IFS=$'\t' read -r num title text || [[ -n "${num:-}" ]]; do
-    [[ -z "${num:-}" || "$num" == "NONE" ]] && continue
-    if [[ -n "$title" ]]; then
-      title_key+=("$season:$num")
-      title_text+=("$title")
+  while IFS= read -r line || [[ -n "${line:-}" ]]; do
+    [[ -z "${line:-}" ]] && continue
+    split_tabs "$line"
+    [[ -z "$F1" || "$F1" == "NONE" ]] && continue
+    if [[ -n "$F2" ]]; then
+      title_key+=("$season:$F1")
+      title_text+=("$F2")
     fi
-    if [[ -n "$text" ]]; then
-      note_key+=("$season:$num")
-      note_text+=("$text")
+    if [[ -n "$F3" ]]; then
+      note_key+=("$season:$F1")
+      note_text+=("$F3")
     fi
   done <<< "$out"
 }
@@ -596,66 +619,359 @@ if bad:
 PY
 }
 
-need python3
-need exiftool
-need sips
+lower_ext() {
+  printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]'
+}
 
-if [[ ! -d "$COVER_DIR" ]]; then
-  echo "No cover folder yet: $COVER_DIR"
-  echo "A poster download creates it. s skips the cover."
-fi
+ensure_mp4_tools() {
+  if [[ "${checked_tools:-0}" -eq 1 ]]; then
+    return 0
+  fi
+  checked_tools=1
+  need exiftool
+  need sips
+  if [[ ! -d "$COVER_DIR" ]]; then
+    echo "No cover folder yet: $COVER_DIR"
+    echo "A poster download creates it. s skips the cover."
+  fi
+}
+
+episode_filename() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import os, re, sys, unicodedata
+title, season, episode, src = sys.argv[1:5]
+title = unicodedata.normalize("NFC", title)
+title = re.sub(r'[\x00-\x1f\\/:*?"<>|]', " ", title)
+title = " ".join(title.split()).strip(" .")
+if not title:
+    print("EMPTY")
+    raise SystemExit(0)
+ext = os.path.splitext(src)[1]
+stem = "S%02dE%02d · %s" % (int(season), int(episode), title)
+if len(stem) > 180:
+    stem = stem[:180].rstrip(" .")
+new = stem + ext
+current = unicodedata.normalize("NFC", os.path.basename(src))
+if current == new:
+    print("SAME")
+else:
+    print(new)
+PY
+}
+
+pick_title_lang() {
+  local ans lower
+  banner "Episode title"
+  printf "${C_PROMPT}1.${C_RESET} Russian\n"
+  printf "${C_PROMPT}2.${C_RESET} English\n"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_MUTED}One language for every file. Enter keeps Russian.${C_RESET}"
+  while true; do
+    printf "${C_PROMPT}Language [Enter = Russian]:${C_RESET} "
+    IFS= read -r ans || exit 1
+    lower=$(printf '%s' "$(trim "$ans")" | tr '[:upper:]' '[:lower:]')
+    case "$lower" in
+      ""|1|ru|rus|russian)
+        TITLE_LANG=ru
+        return 0
+        ;;
+      2|en|eng|english)
+        TITLE_LANG=en
+        return 0
+        ;;
+      *)
+        echo "Enter 1 or 2."
+        ;;
+    esac
+  done
+}
+
+name_key=()
+name_ru=()
+name_en=()
+
+load_names() {
+  local season=$1 show_en id out line nums="" i=0
+  show_en=${PROP_EN:--}
+  [[ -z "$show_en" ]] && show_en="-"
+  id=${PROP_ID:--}
+  [[ -z "$id" ]] && id="-"
+  while [[ $i -lt ${#plan_season[@]} ]]; do
+    if [[ "${plan_season[$i]}" == "$season" ]]; then
+      nums+="${plan_episode[$i]},"
+    fi
+    i=$((i + 1))
+  done
+  if ! out=$(python3 "$PY" episode-notes "$id" "$season" "$nums" "$PROP_RU" "$show_en" "$PROP_YEAR" names 2>/dev/null); then
+    return 0
+  fi
+  while IFS= read -r line || [[ -n "${line:-}" ]]; do
+    [[ -z "${line:-}" ]] && continue
+    split_tabs "$line"
+    [[ -z "$F1" || "$F1" == "NONE" ]] && continue
+    name_key+=("$season:$F1")
+    name_ru+=("$F2")
+    name_en+=("$F3")
+  done <<< "$out"
+}
+
+name_for() {
+  local key=$1 i=0
+  ANS=""
+  while [[ $i -lt ${#name_key[@]} ]]; do
+    if [[ "${name_key[$i]}" == "$key" ]]; then
+      if [[ "$TITLE_LANG" == "en" ]]; then
+        ANS=${name_en[$i]}
+      else
+        ANS=${name_ru[$i]}
+      fi
+      return 0
+    fi
+    i=$((i + 1))
+  done
+}
+
+rename_mkv() {
+  local season i seen src new dest taken j change_n fail label
+  name_key=()
+  name_ru=()
+  name_en=()
+  pick_title_lang
+  if [[ "$TITLE_LANG" == "en" ]]; then
+    picked "Language: English"
+  else
+    picked "Language: Russian"
+  fi
+  echo "Looking up each episode…"
+  seen="|"
+  i=0
+  while [[ $i -lt ${#plan_season[@]} ]]; do
+    season=${plan_season[$i]}
+    i=$((i + 1))
+    case "$seen" in
+      *"|$season|"*) continue ;;
+    esac
+    seen+="$season|"
+    load_names "$season"
+  done
+
+  plan_new=()
+  plan_keep=()
+  banner "Preview"
+  i=0
+  while [[ $i -lt ${#plan_src[@]} ]]; do
+    src=${plan_src[$i]}
+    label=${src#./}
+    name_for "${plan_season[$i]}:${plan_episode[$i]}"
+    if [[ -z "$ANS" ]]; then
+      echo "$label"
+      echo "  ${C_MUTED}No title in this language. Name stays.${C_RESET}"
+      plan_new+=("")
+      plan_keep+=("stay")
+      i=$((i + 1))
+      continue
+    fi
+    new=$(episode_filename "$ANS" "${plan_season[$i]}" "${plan_episode[$i]}" "$src")
+    if [[ "$new" == "EMPTY" || "$new" == "SAME" ]]; then
+      echo "$label"
+      if [[ "$new" == "SAME" ]]; then
+        echo "  ${C_MUTED}Name already matches.${C_RESET}"
+      else
+        echo "  ${C_MUTED}This title cannot be a file name. Name stays.${C_RESET}"
+      fi
+      plan_new+=("")
+      plan_keep+=("stay")
+      i=$((i + 1))
+      continue
+    fi
+    dest="./$new"
+    taken=0
+    if [[ -e "$dest" ]]; then
+      taken=1
+    fi
+    j=0
+    while [[ $j -lt ${#plan_new[@]} ]]; do
+      if [[ -n "${plan_new[$j]}" && "${plan_new[$j]}" == "$new" ]]; then
+        taken=1
+      fi
+      j=$((j + 1))
+    done
+    echo "$label"
+    echo "  → $new"
+    if [[ "$taken" -eq 1 ]]; then
+      echo "  ${C_MUTED}A file with this name is already here. This one stays.${C_RESET}"
+      plan_new+=("")
+      plan_keep+=("stay")
+    else
+      plan_new+=("$new")
+      plan_keep+=("move")
+    fi
+    i=$((i + 1))
+  done
+  if [[ "$skip_n" -gt 0 ]]; then
+    echo "${C_MUTED}Skipped: $skip_n${C_RESET}"
+  fi
+  change_n=0
+  i=0
+  while [[ $i -lt ${#plan_keep[@]} ]]; do
+    if [[ "${plan_keep[$i]}" == "move" ]]; then
+      change_n=$((change_n + 1))
+    fi
+    i=$((i + 1))
+  done
+  echo
+  if [[ "$change_n" -eq 0 ]]; then
+    echo "No files to rename."
+    exit 0
+  fi
+  echo "${C_MUTED}Only the file name changes.${C_RESET}"
+  if ! confirm_yes "Rename these files?"; then
+    echo "Cancelled"
+    exit 0
+  fi
+  fail=0
+  i=0
+  while [[ $i -lt ${#plan_src[@]} ]]; do
+    if [[ "${plan_keep[$i]}" != "move" ]]; then
+      i=$((i + 1))
+      continue
+    fi
+    src=${plan_src[$i]}
+    dest="./${plan_new[$i]}"
+    echo
+    echo "Renaming: $(basename "$src")"
+    if [[ -e "$dest" ]] || ! mv -n -- "$src" "$dest" || [[ -e "$src" ]]; then
+      echo "Could not rename: $(basename "$src")"
+      fail=$((fail + 1))
+      i=$((i + 1))
+      continue
+    fi
+    picked "$(basename "$dest")"
+    i=$((i + 1))
+  done
+  echo
+  if [[ "$fail" -ne 0 ]]; then
+    echo "Done with errors"
+    exit 1
+  fi
+  picked "Done"
+  exit 0
+}
+
+need python3
 
 files=()
 while IFS= read -r -d '' f; do
   files+=("$f")
-done < <(find . -maxdepth 1 -type f -iname '*.mp4' ! -name '.*' -print0 | sort -z)
+done < <(find . -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mkv' \) ! -name '.*' -print0 | sort -z)
 
 if [[ ${#files[@]} -eq 0 ]]; then
-  echo "No mp4 files in $(pwd)"
+  echo "No mp4 or mkv files in $(pwd)"
   exit 1
 fi
 
-banner "MP4 in this folder:"
+has_mp4=0
+has_mkv=0
+for f in "${files[@]}"; do
+  case "$(lower_ext "$f")" in
+    mp4) has_mp4=1 ;;
+    mkv) has_mkv=1 ;;
+  esac
+done
+if [[ "$has_mkv" -eq 0 ]]; then
+  ensure_mp4_tools
+fi
+
+if [[ "$has_mp4" -eq 1 && "$has_mkv" -eq 1 ]]; then
+  banner "Video in this folder:"
+elif [[ "$has_mkv" -eq 1 ]]; then
+  banner "MKV in this folder:"
+else
+  banner "MP4 in this folder:"
+fi
 i=1
 for f in "${files[@]}"; do
   printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${f#./}"
   i=$((i + 1))
 done
 echo "${C_HEAD}${SEP}${C_RESET}"
-echo "${C_MUTED}Pick one or more numbers separated by spaces (example: 1 3 5).${C_RESET}"
+echo "${C_MUTED}Numbers (1 3 5), s02 for one season, or Enter for every video in this folder.${C_RESET}"
 
 chosen=()
+kind=""
 while true; do
-  printf "${C_PROMPT}Select file number(s) (1-%d):${C_RESET} " "${#files[@]}"
+  printf "${C_PROMPT}Numbers, s02 for one season, or Enter for all (1-%d):${C_RESET} " "${#files[@]}"
   IFS= read -r pick || exit 1
-  # shellcheck disable=SC2206
-  nums=($pick)
-  ok=1
+  pick=$(trim "$pick")
   chosen=()
-  seen_ids=" "
-  if [[ ${#nums[@]} -eq 0 ]]; then
-    echo "Enter at least one number."
-    continue
+  ok=1
+  token=$(printf '%s' "$pick" | tr '[:upper:]' '[:lower:]')
+  if [[ -z "$pick" ]]; then
+    chosen=("${files[@]}")
+  elif [[ "$token" =~ ^s0*([0-9]{1,2})$ ]]; then
+    code=$(printf 's%02de' "$((10#${BASH_REMATCH[1]}))")
+    for src in "${files[@]}"; do
+      low=$(printf '%s' "${src#./}" | tr '[:upper:]' '[:lower:]')
+      if [[ "$low" == *"$code"* ]]; then
+        chosen+=("$src")
+      fi
+    done
+    if [[ ${#chosen[@]} -eq 0 ]]; then
+      echo "No videos of that season in the list."
+      continue
+    fi
+  else
+    # shellcheck disable=SC2206
+    nums=($pick)
+    seen_ids=" "
+    if [[ ${#nums[@]} -eq 0 ]]; then
+      echo "Enter at least one number."
+      continue
+    fi
+    for n in "${nums[@]}"; do
+      if [[ ! "$n" =~ ^[1-9][0-9]*$ ]] || ((10#$n < 1 || 10#$n > ${#files[@]})); then
+        echo "Bad number: $n"
+        ok=0
+        break
+      fi
+      case "$seen_ids" in
+        *" $n "*) continue ;;
+      esac
+      seen_ids+="$n "
+      chosen+=("${files[$((10#$n - 1))]}")
+    done
+    if [[ "$ok" -ne 1 ]]; then
+      continue
+    fi
+    if [[ ${#chosen[@]} -eq 0 ]]; then
+      echo "Enter at least one number."
+      continue
+    fi
   fi
-  for n in "${nums[@]}"; do
-    if [[ ! "$n" =~ ^[1-9][0-9]*$ ]] || ((10#$n < 1 || 10#$n > ${#files[@]})); then
-      echo "Bad number: $n"
-      ok=0
+  kind=""
+  mixed=0
+  for src in "${chosen[@]}"; do
+    ext=$(lower_ext "$src")
+    if [[ -z "$kind" ]]; then
+      kind=$ext
+    elif [[ "$kind" != "$ext" ]]; then
+      mixed=1
       break
     fi
-    case "$seen_ids" in
-      *" $n "*) continue ;;
-    esac
-    seen_ids+="$n "
-    chosen+=("${files[$((10#$n - 1))]}")
   done
-  if [[ "$ok" -eq 1 && ${#chosen[@]} -gt 0 ]]; then
-    break
+  if [[ "$mixed" -eq 1 ]]; then
+    echo "Pick either mp4 or mkv."
+    continue
   fi
-  if [[ "$ok" -eq 1 ]]; then
-    echo "Enter at least one number."
-  fi
+  break
 done
+
+RENAME=0
+if [[ "$kind" == "mkv" ]]; then
+  RENAME=1
+else
+  ensure_mp4_tools
+fi
 
 plan_src=()
 plan_season=()
@@ -682,8 +998,13 @@ fi
 banner "Show"
 guess=$(folder_guess)
 echo "${C_MUTED}Suggested from the folder name. Enter keeps it.${C_RESET}"
-echo "${C_MUTED}Season and episode come from the file name. The file name stays.${C_RESET}"
-echo "${C_MUTED}No internet: Enter types the year by hand. s leaves the files unchanged.${C_RESET}"
+if [[ "$RENAME" -eq 1 ]]; then
+  echo "${C_MUTED}Season and episode come from the file name. The file will be renamed.${C_RESET}"
+  echo "${C_MUTED}No internet: s leaves the files unchanged.${C_RESET}"
+else
+  echo "${C_MUTED}Season and episode come from the file name. The file name stays.${C_RESET}"
+  echo "${C_MUTED}No internet: Enter types the year by hand. s leaves the files unchanged.${C_RESET}"
+fi
 searched=0
 while true; do
   if [[ -n "$guess" ]]; then
@@ -699,6 +1020,10 @@ while true; do
   fi
   if [[ -z "$typed" ]]; then
     if [[ "$searched" -eq 1 ]]; then
+      if [[ "$RENAME" -eq 1 ]]; then
+        echo "Type another name, or s to leave the files unchanged."
+        continue
+      fi
       manual_show
       break
     fi
@@ -714,11 +1039,19 @@ while true; do
   load_show "$typed" || status=$?
   searched=1
   if [[ "$status" -eq 1 ]]; then
-    echo "Kinopoisk did not answer. Enter types the year by hand. s leaves the files unchanged."
+    if [[ "$RENAME" -eq 1 ]]; then
+      echo "Kinopoisk did not answer. Type another name, or s to leave the files unchanged."
+    else
+      echo "Kinopoisk did not answer. Enter types the year by hand. s leaves the files unchanged."
+    fi
     continue
   fi
   if [[ "$status" -ne 0 ]]; then
-    echo "No show found. Enter types the year by hand. s leaves the files unchanged."
+    if [[ "$RENAME" -eq 1 ]]; then
+      echo "No show found. Type another name, or s to leave the files unchanged."
+    else
+      echo "No show found. Enter types the year by hand. s leaves the files unchanged."
+    fi
     continue
   fi
   if choose_show; then
@@ -726,6 +1059,12 @@ while true; do
   fi
   searched=0
 done
+
+if [[ "$RENAME" -eq 1 ]]; then
+  picked "Show: $PROP_RU"
+  rename_mkv
+  exit 1
+fi
 
 if [[ -z "${PROP_GENRE:-}" ]]; then
   echo "Looking up the genre…"
