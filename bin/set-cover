@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Write cover.jpg into the .m4b and the MP3 copies. Audio is not re-encoded.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/set-cover.py"
+
+need python3
+need ffmpeg
+need ffprobe
+need exiftool
+
+cover=""
+m4bs=()
+mp3_count=0
+plan_out=$(python3 "$PY" plan) || exit 1
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    cover) cover=$value ;;
+    m4b) m4bs+=("$value") ;;
+    mp3) mp3_count=$value ;;
+  esac
+done <<<"$plan_out"
+
+banner "Cover"
+if [[ -z "$cover" ]]; then
+  echo "Put cover.jpg in this folder."
+  echo "${C_MUTED}book-cover makes it from portrait.jpg.${C_RESET}"
+  exit 1
+fi
+if [[ ${#m4bs[@]} -eq 0 && "$mp3_count" == "0" ]]; then
+  echo "No audiobook in this folder yet."
+  echo "${C_MUTED}to-m4b makes the Books file. to-mp3 makes the MP3 folder.${C_RESET}"
+  exit 1
+fi
+echo "${C_MUTED}Picture: ${cover}. Sound is copied, not re-encoded. Run again to replace it.${C_RESET}"
+
+banner "Files"
+if [[ ${#m4bs[@]} -eq 0 ]]; then
+  echo "${C_MUTED}M4B: none${C_RESET}"
+else
+  for name in "${m4bs[@]}"; do
+    printf "${C_PROMPT}M4B${C_RESET} %s\n" "$name"
+  done
+fi
+if [[ "$mp3_count" == "0" ]]; then
+  echo "${C_MUTED}MP3: none${C_RESET}"
+elif [[ "$mp3_count" == "1" ]]; then
+  echo "${C_MUTED}MP3: 1 file${C_RESET}"
+else
+  echo "${C_MUTED}MP3: ${mp3_count} files${C_RESET}"
+fi
+
+echo
+printf "${C_PROMPT}Write the cover into these files? [Y/n]:${C_RESET} "
+read -r reply
+reply=${reply:-Y}
+case "$reply" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+python3 "$PY" write
+picked "Done"

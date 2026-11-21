@@ -38,7 +38,7 @@ exiftool -ver
 
 ## Скрипты
 
-Видео, по шагам сериала.
+### Видео
 
 - ![pack-show](https://img.shields.io/badge/pack--show-0d9488?style=flat-square)  
   Сезоны лежат папками (`s01` или длинное имя вроде `Show.S01`). Собирает серии в одну папку: `S01E01 · Название`. Если названия серии нет — только `S01E01`.
@@ -67,7 +67,7 @@ exiftool -ver
 - ![clean-stick](https://img.shields.io/badge/clean--stick-0d9488?style=flat-square)  
   Запускать на флешке после копирования. Удаляет спрятанные файлы `._`, которые телек показывает как битые ролики, и проверяет, что они исчезли.
 
-Субтитры: скачать, приклеить, поправить буквы, выбрать дорожку.
+### Субтитры
 
 - ![get-subs](https://img.shields.io/badge/get--subs-7c6bb5?style=flat-square)  
   Английские субтитры с WatchEnglish: сезон сериала или один фильм. В текущую папку кладёт `S02E01 · Next.srt` или `The Dark Knight.srt`. Ролик не скачивает.
@@ -81,7 +81,7 @@ exiftool -ver
 - ![set-lang](https://img.shields.io/badge/set--lang-7c6bb5?style=flat-square)  
   Спрашивает, какой звук и какие субтитры включены, когда файл открывается. Для уже готовых роликов. Те же вопросы задают конвертация и приклейка субтитров.
 
-Книги.
+### Книги
 
 - ![to-txt](https://img.shields.io/badge/to--txt-d4568d?style=flat-square)  
   Из Word и DjVu делает txt и docx для Pages. Сноски в книге становятся номерами.
@@ -95,7 +95,10 @@ exiftool -ver
 - ![to-mp3](https://img.shields.io/badge/to--mp3-d4568d?style=flat-square)  
   Те же главы отдельными mp3 для телевизора LG и для Книг. Номер, автор и чтец уже внутри. Готовый mp3 не пережимается.
 
-Шрифты.
+- ![set-cover](https://img.shields.io/badge/set--cover-d4568d?style=flat-square)  
+  Вписывает `cover.jpg` в файл для Книг и в папку `MP3`. Звук не пережимается. Повтор заменяет картинку.
+
+### Шрифты
 
 - ![sort-fonts](https://img.shields.io/badge/sort--fonts-65a30d?style=flat-square)  
   Шрифты в корне папки. Каждый файл уходит в папку своего названия, хвост из цифр в имени убирается. В корне остаётся то, что ещё не разобрано.
@@ -103,9 +106,9 @@ exiftool -ver
 - ![to-ttf](https://img.shields.io/badge/to--ttf-65a30d?style=flat-square)  
   Веб-шрифт в текущей папке становится ttf с тем же именем. Файл woff2 остаётся. Папки внутри не открывает.
 
-Цвета.
+### Цвета
 
-- ![tailwind-clr](https://img.shields.io/badge/tailwind--clr-8b939c?style=flat-square)  
+- ![tailwind-clr](https://img.shields.io/badge/tailwind--clr-0ea5e9?style=flat-square)  
   Не про видео. Собирает палитру цветов Tailwind в файл для Mac.
 
 `to-apple`, `to-lg-tv`, `to-m4b` и `to-mp3` на время работы не дают Mac уснуть. Питание от сети, крышку ноутбука не закрывать. `Ctrl+C` останавливает работу.
@@ -246,7 +249,14 @@ cd "папка с главами"
 book-cover
 # собрать обложку. Enter оставляет название. Свой перенос: слова / через / косую
 # ожидается: cover.jpg и в конце Done
+set-cover
+# вписать cover.jpg в .m4b и в файлы папки MP3. Звук не пережимается. Enter записывает
+# ожидается: Done
 ```
+
+Файл `.m4b` или папка `MP3` к этому моменту уже лежат здесь. Новую картинку кладёшь вместо `cover.jpg` и снова запускаешь `set-cover`.
+
+Если книга уже была в Книгах, обложка сама не обновится. Убери её из библиотеки (файл на Маке не удаляй) и добавь `.m4b` снова. Телевизор картинку из файла обычно не показывает.
 
 ## Шрифты
 
