@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Build cover.jpg from portrait.* in the current folder. Title from the folder name.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+ask() {
+  local label="$1"
+  local default="$2"
+  local reply
+  printf "${C_PROMPT}%s [%s]:${C_RESET} " "$label" "$default" >&2
+  read -r reply || reply=""
+  if [[ -z "$reply" ]]; then
+    reply="$default"
+  fi
+  printf '%s' "$reply"
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/book-cover.py"
+
+need python3
+python3 "$PY" check-font >/dev/null
+
+guess=$(python3 "$PY" guess) || exit 1
+portrait=""
+title=""
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    portrait) portrait=$value ;;
+    title) title=$value ;;
+  esac
+done <<<"$guess"
+
+banner "Book cover"
+if [[ -z "$portrait" ]]; then
+  echo "Put the portrait in this folder as portrait.jpg"
+  echo "${C_MUTED}png, webp, tif and heic work too. The name stays portrait.${C_RESET}"
+  exit 1
+fi
+echo "${C_MUTED}Portrait: ${portrait}. White band below, title in Angelica, up to 3 lines.${C_RESET}"
+
+banner "Title"
+echo "${C_MUTED}Enter keeps the value in brackets. Type / where a line should break.${C_RESET}"
+title=$(ask "Book title" "$title")
+while [[ -z "$title" ]]; do
+  echo "Enter a book title."
+  title=$(ask "Book title" "")
+done
+
+banner "Lines"
+while IFS=$'\t' read -r num line; do
+  printf "${C_PROMPT}%s${C_RESET} %s\n" "$num" "$line"
+done < <(BOOK_TITLE="$title" python3 "$PY" lines)
+
+echo
+printf "${C_PROMPT}Write cover.jpg? [Y/n]:${C_RESET} "
+read -r reply
+reply=${reply:-Y}
+case "$reply" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+BOOK_TITLE="$title" PORTRAIT="$portrait" python3 "$PY" write
+picked "Done: cover.jpg"
