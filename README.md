@@ -38,47 +38,16 @@ exiftool -ver
 
 ## Скрипты
 
+Видео, по шагам сериала.
+
 - ![pack-show](https://img.shields.io/badge/pack--show-0d9488?style=flat-square)  
   Сезоны лежат папками (`s01` или длинное имя вроде `Show.S01`). Собирает серии в одну папку: `S01E01 · Название`. Если названия серии нет — только `S01E01`.
 
 - ![to-apple](https://img.shields.io/badge/to--apple-0d9488?style=flat-square)  
   Файл для Mac и iPhone. В конце имени будет `_apple.mp4`. Размер и качество уже выбраны: вы указываете файлы и дорожки.
 
-- ![tag-movie](https://img.shields.io/badge/tag--movie-0d9488?style=flat-square)  
-  Имя файла и название в приложении TV: `Пила 1 [Saw] 2004`. Постер сам скачивается с Кинопоиска. Видео заново не сжимается.
-
-- ![tag-show](https://img.shields.io/badge/tag--show-0d9488?style=flat-square)  
-  Для сериала. Запускать в папке `Apple`. Название сериала берёт из папки над ней, поэтому та папка должна называться как сериал. Сезон и серию берёт из имени файла. Одна обложка на все серии.
-
 - ![to-lg-tv](https://img.shields.io/badge/to--lg--tv-0d9488?style=flat-square)  
   Файл для телевизора LG. В конце имени будет `_lgc2.mkv`. Звук делается таким, чтобы телек его играл, а не молчал.
-
-- ![to-m4b](https://img.shields.io/badge/to--m4b-d4568d?style=flat-square)  
-  Одна аудиокнига для приложения Книги. Главы из всех файлов папки, автор и чтец уже внутри.
-
-- ![to-mp3](https://img.shields.io/badge/to--mp3-d4568d?style=flat-square)  
-  Те же главы отдельными mp3 для телевизора LG и для Книг. Номер, автор и чтец уже внутри. Готовый mp3 не пережимается.
-
-- ![book-cover](https://img.shields.io/badge/book--cover-d4568d?style=flat-square)  
-  Обложка: портрет сверху, название большими буквами снизу. Шрифт Angelica.
-
-- ![fix-subs](https://img.shields.io/badge/fix--subs-7c6bb5?style=flat-square)  
-  Чинит буквы в субтитрах уже готового файла. Английскую строку из больших букв делает обычным предложением. Для Apple и для телека.
-
-- ![get-subs](https://img.shields.io/badge/get--subs-7c6bb5?style=flat-square)  
-  Английские субтитры с WatchEnglish: сезон сериала или один фильм. В текущую папку кладёт `S02E01 · Next.srt` или `The Dark Knight.srt`. Ролик не скачивает.
-
-- ![add-subs](https://img.shields.io/badge/add--subs-7c6bb5?style=flat-square)  
-  Приклеивает субтитры из отдельного файла к копии ролика. Исходный файл не меняется. Для сезона на 25 кадрах можно задать свой сдвиг.
-
-- ![set-lang](https://img.shields.io/badge/set--lang-7c6bb5?style=flat-square)  
-  Спрашивает, какой звук и какие субтитры включены, когда файл открывается. Для уже готовых роликов. Те же вопросы задают конвертация и приклейка субтитров.
-
-- ![sort-ready](https://img.shields.io/badge/sort--ready-0d9488?style=flat-square)  
-  Когда для серии есть оба готовых файла, раскладывает их в папки `Apple/` и `LG/` и убирает пометку из имени. Исходник удаляет. Если готов только один файл, серию не трогает.
-
-- ![clean-stick](https://img.shields.io/badge/clean--stick-0d9488?style=flat-square)  
-  Запускать на флешке после копирования. Удаляет спрятанные файлы `._`, которые телек показывает как битые ролики, и проверяет, что они исчезли.
 
 - ![to-mp4](https://img.shields.io/badge/to--mp4-0d9488?style=flat-square)  
   То же перекодирование, но ширину и качество выбираете сами. Один файл за раз.
@@ -86,17 +55,58 @@ exiftool -ver
 - ![cut-mp4](https://img.shields.io/badge/cut--mp4-0d9488?style=flat-square)  
   Вырезает кусок из уже готового mp4. Заново видео не пережимает.
 
+- ![sort-ready](https://img.shields.io/badge/sort--ready-0d9488?style=flat-square)  
+  Когда для серии есть оба готовых файла, раскладывает их в папки `Apple/` и `LG/` и убирает пометку из имени. Исходник удаляет. Если готов только один файл, серию не трогает.
+
+- ![tag-show](https://img.shields.io/badge/tag--show-0d9488?style=flat-square)  
+  Для сериала. Запускать в папке `Apple`. Название сериала берёт из папки над ней, поэтому та папка должна называться как сериал. Сезон и серию берёт из имени файла. Одна обложка на все серии.
+
+- ![tag-movie](https://img.shields.io/badge/tag--movie-0d9488?style=flat-square)  
+  Имя файла и название в приложении TV: `Пила 1 [Saw] 2004`. Постер сам скачивается с Кинопоиска. Видео заново не сжимается.
+
+- ![clean-stick](https://img.shields.io/badge/clean--stick-0d9488?style=flat-square)  
+  Запускать на флешке после копирования. Удаляет спрятанные файлы `._`, которые телек показывает как битые ролики, и проверяет, что они исчезли.
+
+Субтитры: скачать, приклеить, поправить буквы, выбрать дорожку.
+
+- ![get-subs](https://img.shields.io/badge/get--subs-7c6bb5?style=flat-square)  
+  Английские субтитры с WatchEnglish: сезон сериала или один фильм. В текущую папку кладёт `S02E01 · Next.srt` или `The Dark Knight.srt`. Ролик не скачивает.
+
+- ![add-subs](https://img.shields.io/badge/add--subs-7c6bb5?style=flat-square)  
+  Приклеивает субтитры из отдельного файла к копии ролика. Исходный файл не меняется. Для сезона на 25 кадрах можно задать свой сдвиг.
+
+- ![fix-subs](https://img.shields.io/badge/fix--subs-7c6bb5?style=flat-square)  
+  Чинит буквы в субтитрах уже готового файла. Английскую строку из больших букв делает обычным предложением. Для Apple и для телека.
+
+- ![set-lang](https://img.shields.io/badge/set--lang-7c6bb5?style=flat-square)  
+  Спрашивает, какой звук и какие субтитры включены, когда файл открывается. Для уже готовых роликов. Те же вопросы задают конвертация и приклейка субтитров.
+
+Книги.
+
 - ![to-txt](https://img.shields.io/badge/to--txt-d4568d?style=flat-square)  
   Из Word и DjVu делает txt и docx для Pages. Сноски в книге становятся номерами.
 
-- ![tailwind-clr](https://img.shields.io/badge/tailwind--clr-8b939c?style=flat-square)  
-  Не про видео. Собирает палитру цветов Tailwind в файл для Mac.
+- ![book-cover](https://img.shields.io/badge/book--cover-d4568d?style=flat-square)  
+  Обложка: портрет сверху, название большими буквами снизу. Шрифт Angelica.
+
+- ![to-m4b](https://img.shields.io/badge/to--m4b-d4568d?style=flat-square)  
+  Одна аудиокнига для приложения Книги. Главы из всех файлов папки, автор и чтец уже внутри.
+
+- ![to-mp3](https://img.shields.io/badge/to--mp3-d4568d?style=flat-square)  
+  Те же главы отдельными mp3 для телевизора LG и для Книг. Номер, автор и чтец уже внутри. Готовый mp3 не пережимается.
+
+Шрифты.
 
 - ![sort-fonts](https://img.shields.io/badge/sort--fonts-65a30d?style=flat-square)  
   Шрифты в корне папки. Каждый файл уходит в папку своего названия, хвост из цифр в имени убирается. В корне остаётся то, что ещё не разобрано.
 
 - ![to-ttf](https://img.shields.io/badge/to--ttf-65a30d?style=flat-square)  
   Веб-шрифт в текущей папке становится ttf с тем же именем. Файл woff2 остаётся. Папки внутри не открывает.
+
+Цвета.
+
+- ![tailwind-clr](https://img.shields.io/badge/tailwind--clr-8b939c?style=flat-square)  
+  Не про видео. Собирает палитру цветов Tailwind в файл для Mac.
 
 `to-apple`, `to-lg-tv`, `to-m4b` и `to-mp3` на время работы не дают Mac уснуть. Питание от сети, крышку ноутбука не закрывать. `Ctrl+C` останавливает работу.
 
