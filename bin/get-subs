@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Save English subtitles from a WatchEnglish season page into this folder.
+set -euo pipefail
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+need python3
+exec python3 "$SCRIPT_DIR/../lib/get-subs.py" "$@"
