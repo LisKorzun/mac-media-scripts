@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # Find a Kinopoisk film, suggest a short title and a genre, save the poster as png.
+import html as html_lib
+import http.cookiejar
 import json
 import os
 import re
@@ -123,6 +125,27 @@ def as_film(movie):
     }
 
 
+SHOW_TYPES = {"TvSeries", "TvShow", "MiniSeries"}
+
+
+def as_show(movie):
+    if not movie or movie.get("__typename") not in SHOW_TYPES:
+        return None
+    title = movie.get("title") or {}
+    ru = (title.get("russian") or "").replace("\t", " ").strip()
+    en = (title.get("original") or "").replace("\t", " ").strip()
+    year = film_year(movie)
+    if not ru or not re.fullmatch(r"\d{4}", year or ""):
+        return None
+    return {
+        "id": movie.get("id"),
+        "ru": ru,
+        "en": en or "-",
+        "year": year,
+        "url": poster_url(movie),
+    }
+
+
 def gql(keyword):
     body = json.dumps({
         "operationName": "SuggestSearch",
@@ -149,19 +172,27 @@ def gql(keyword):
     return payload
 
 
-def films_for(keyword):
+def titles_for(keyword, cast):
     payload = gql(keyword)
     top = (((payload.get("data") or {}).get("suggest") or {}).get("top") or {})
     found = []
     global_hit = ((top.get("topResult") or {}).get("global")) or {}
-    movie = as_film(global_hit)
+    movie = cast(global_hit)
     if movie:
         found.append(movie)
     for item in top.get("movies") or []:
-        movie = as_film((item or {}).get("movie"))
+        movie = cast((item or {}).get("movie"))
         if movie:
             found.append(movie)
     return found
+
+
+def films_for(keyword):
+    return titles_for(keyword, as_film)
+
+
+def shows_for(keyword):
+    return titles_for(keyword, as_show)
 
 
 JUNK = {
@@ -181,22 +212,17 @@ ROMAN_TO_INT = {
 }
 GENRE_RULES = (
     ("ужас", "Фильмы ужасов"),
-    ("мульт", "Мультфильм"),
-    ("анимац", "Мультфильм"),
+    ("мульт", "Мультфильмы"),
+    ("анимац", "Мультфильмы"),
+    ("биограф", "Биографии"),
+    ("всей семь", "Для всей семьи"),
+    ("семейн", "Для всей семьи"),
+    ("психоз", "Психоз"),
+    ("психологическ", "Психоз"),
     ("фантаст", "Фантастика"),
-    ("фэнтези", "Фэнтези"),
-    ("фэнтез", "Фэнтези"),
-    ("боевик", "Боевик"),
-    ("триллер", "Триллер"),
-    ("детектив", "Детектив"),
-    ("криминал", "Криминал"),
-    ("мелодрам", "Мелодрама"),
-    ("романт", "Мелодрама"),
-    ("комед", "Комедия"),
-    ("приключен", "Приключения"),
-    ("воен", "Военный"),
-    ("семейн", "Семейный"),
-    ("драм", "Драма"),
+    ("триллер", "Триллеры"),
+    ("комед", "Комедии"),
+    ("драм", "Драмы"),
 )
 WIKI_UA = "tag-movie/1.0 (local; film tags)"
 STRUCT_NAME = re.compile(r"^(?P<ru>.+?) \[(?P<en>[^\[\]]+)\] (?P<year>\d{4})$")
@@ -352,6 +378,27 @@ def collect(ru, en, year, part=""):
     return ordered
 
 
+def search_show(keyword):
+    ordered = []
+    seen = set()
+    for show in shows_for(keyword):
+        if show["id"] in seen:
+            continue
+        seen.add(show["id"])
+        ordered.append(show)
+    if not ordered:
+        print("NONE")
+        return
+    hits = [show for show in ordered if title_hit(show, keyword, keyword)]
+    if len(hits) == 1:
+        print("SURE")
+        write_show_row(hits[0])
+    print("LIST")
+    ranked = hits + [show for show in ordered if show not in hits]
+    for show in ranked[:8]:
+        write_show_row(show)
+
+
 def search(ru, en, year):
     ordered = collect(ru, en, year)
     hits = year_hits(ordered, ru, en, year) if year else []
@@ -371,10 +418,18 @@ def write_row(film):
     sys.stdout.write("%s\t%s\t%s\t%s\n" % (film["ru"], film["en"], film["year"], film["url"]))
 
 
+def write_show_row(show):
+    sys.stdout.write(
+        "%s\t%s\t%s\t%s\t%s\n"
+        % (show["ru"], show["en"], show["year"], show["url"], show["id"])
+    )
+
+
 def map_genre(text):
     folded = norm(text)
     for needle, label in GENRE_RULES:
-        if norm(needle) in folded:
+        token = norm(needle)
+        if re.search(r"(?<![0-9a-zа-я])%s" % re.escape(token), folded):
             return label
     return ""
 
@@ -383,12 +438,12 @@ def choose_genre(description, infobox):
     desc = norm(description)
     box = norm(infobox)
     if "мульт" in desc or "анимац" in desc or "мульт" in box or "анимац" in box:
-        return "Мультфильм"
+        return "Мультфильмы"
     return map_genre(infobox) or map_genre(description)
 
 
-def wiki_get(params):
-    url = "https://ru.wikipedia.org/w/api.php?" + urllib.parse.urlencode(params)
+def wiki_get(params, lang="ru"):
+    url = "https://%s.wikipedia.org/w/api.php?" % lang + urllib.parse.urlencode(params)
     delay = 1.0
     for attempt in range(4):
         req = urllib.request.Request(url, headers={
@@ -425,7 +480,7 @@ def infobox_genre(text):
 def page_genre(title, text):
     folded = norm(title)
     if "мульт" in folded or "анимац" in folded:
-        return "Мультфильм"
+        return "Мультфильмы"
     return choose_genre("", infobox_genre(text))
 
 
@@ -442,12 +497,19 @@ def page_matches_film(title, ru):
     return True
 
 
-def wiki_genre(ru, year):
-    queries = [
-        '"%s" %s фильм' % (ru, year),
-        "%s %s фильм" % (ru, year),
-        '"%s" фильм' % ru,
-    ]
+def wiki_genre(ru, year, kind="film"):
+    if kind == "show":
+        queries = [
+            '"%s" %s сериал' % (ru, year),
+            "%s %s сериал" % (ru, year),
+            '"%s" сериал' % ru,
+        ]
+    else:
+        queries = [
+            '"%s" %s фильм' % (ru, year),
+            "%s %s фильм" % (ru, year),
+            '"%s" фильм' % ru,
+        ]
     try:
         seen = set()
         for query in queries:
@@ -494,6 +556,280 @@ def wiki_genre(ru, year):
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, KeyError, ValueError):
         return ""
     return ""
+
+
+def plain_html(fragment):
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    return " ".join(html_lib.unescape(text).split())
+
+
+def http_text(opener, url, data=None, timeout=20):
+    req = urllib.request.Request(url, data=data, headers={
+        "User-Agent": UA,
+        "Accept": "text/html",
+        "Accept-Language": "ru",
+    })
+    with opener.open(req, timeout=timeout) as resp:
+        raw = resp.read()
+        final = resp.geturl()
+    head = raw[:500].decode("latin-1", "replace").lower()
+    charset = "cp1251" if ("windows-1251" in head or "cp1251" in head) else "utf-8"
+    return final, raw.decode(charset, "replace")
+
+
+_KP_OPENER = None
+
+
+def kp_opener():
+    global _KP_OPENER
+    if _KP_OPENER is None:
+        jar = http.cookiejar.CookieJar()
+        _KP_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    return _KP_OPENER
+
+
+def kp_get(url):
+    opener = kp_opener()
+    final, text = http_text(opener, url)
+    if "sso.passport" in final or text.lstrip().startswith("<body></body><script"):
+        final, text = http_text(opener, url)
+    return text
+
+
+def episode_title(ru, en):
+    ru = (ru or "").strip()
+    en = (en or "").strip()
+    if ru and en and norm(ru) != norm(en):
+        return "%s [%s]" % (ru, en)
+    return ru or en
+
+
+def kp_episode_titles(page):
+    text = html_lib.unescape(page or "")
+    found = {}
+    links = re.compile(
+        r'href="[^"]*?/season-(\d+)/episode-(\d+)"[^>]*>(.*?)</a>',
+        re.I | re.S,
+    )
+    for match in links.finditer(text):
+        tail = text[match.end():match.end() + 800]
+        english = re.search(
+            r'class=["\']episodesOriginalName["\'][^>]*>(.*?)</span>',
+            tail,
+            re.I | re.S,
+        )
+        nxt = re.search(r'href="[^"]*?/season-\d+/episode-\d+"', tail)
+        en = ""
+        if english and (not nxt or english.start() < nxt.start()):
+            en = plain_html(english.group(1))
+        title = episode_title(plain_html(match.group(3)), en)
+        if title:
+            found[(int(match.group(1)), int(match.group(2)))] = title
+    return found
+
+
+def kp_episode_text(page):
+    match = re.search(
+        r"<h2[^>]*>\s*\d+\s*сезон,\s*\d+\s*серия\b.*?</h2>\s*<p[^>]*>(.*?)</p>",
+        page or "",
+        re.I | re.S,
+    )
+    if not match:
+        return ""
+    return plain_html(match.group(1))
+
+
+def kp_season_counts(page):
+    found = {}
+    text = html_lib.unescape(page or "")
+    for season, episode in re.findall(r"/season-(\d+)/episode-(\d+)", text):
+        season = int(season)
+        episode = int(episode)
+        found[season] = max(found.get(season, 0), episode)
+    return found
+
+
+def kp_notes(film_id, season, wanted):
+    counts = {}
+    notes = {}
+    titles = {}
+    try:
+        page = kp_get("https://www.kinopoisk.ru/film/%s/episodes/" % film_id)
+        counts = kp_season_counts(page)
+        all_titles = kp_episode_titles(page)
+        for number in wanted:
+            title = all_titles.get((int(season), int(number)), "")
+            if title:
+                titles[number] = title
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        counts = {}
+    for number in wanted:
+        try:
+            page = kp_get(
+                "https://www.kinopoisk.ru/series/%s/season-%s/episode-%s/"
+                % (film_id, season, number)
+            )
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            continue
+        text = kp_episode_text(page)
+        if text:
+            notes[number] = text
+    return notes, counts, titles
+
+
+def kt_blocked(final, text):
+    return "/robot/" in (final or "") or "captcha_input" in (text or "")
+
+
+def kt_post(query):
+    try:
+        data = urllib.parse.urlencode({"text": query}, encoding="cp1251").encode("ascii")
+    except UnicodeEncodeError:
+        return "", ""
+    opener = urllib.request.build_opener()
+    try:
+        return http_text(opener, "https://www.kino-teatr.ru/search/", data)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return "", ""
+
+
+def kt_choose(page, ru, en, year):
+    best = None
+    best_score = 0
+    seen = set()
+    for match in re.finditer(
+        r'href="(?:https?://www\.kino-teatr\.ru)?(/kino/movie/([a-z0-9-]+)/(\d+)/)',
+        page or "",
+        re.I,
+    ):
+        key = (match.group(2), match.group(3))
+        if key in seen:
+            continue
+        seen.add(key)
+        around = norm(plain_html(page[max(0, match.start() - 160):match.end() + 240]))
+        score = 0
+        if ru and norm(ru) in around:
+            score += 3
+        if en and en not in ("-", ru) and norm(en) in around:
+            score += 2
+        if year and str(year) in around:
+            score += 2
+        if score > best_score:
+            best_score = score
+            best = key
+    if best_score < 3:
+        return None
+    return best
+
+
+def kt_parse(page):
+    chunk = page or ""
+    match = re.search(r'class="big_content_block">(.*)', chunk, re.I | re.S)
+    if match:
+        chunk = match.group(1)
+    end = len(chunk)
+    for marker in ('class="footer"', 'id="footer"', "дополнительная информация"):
+        at = chunk.find(marker)
+        if at > 0:
+            end = min(end, at)
+    chunk = chunk[:end]
+    chunk = re.sub(r"<br\s*/?>", "\n", chunk, flags=re.I)
+    chunk = re.sub(r"</(?:p|div|h\d|li|tr)>", "\n", chunk, flags=re.I)
+    chunk = re.sub(r"<[^>]+>", "", chunk)
+    chunk = html_lib.unescape(chunk)
+    notes = {}
+    started = set()
+    current = None
+    buf = []
+    head = re.compile(r"^(\d+)(?:\s*-\s*[а-я])?\s*сери[яию]\b[\s.:|–-]*(.*)$", re.I)
+
+    def flush():
+        if current is None:
+            return
+        text = " ".join(buf).strip()
+        if text:
+            notes[current] = text
+
+    for line in chunk.splitlines():
+        line = " ".join(line.split())
+        if not line:
+            continue
+        found = head.match(line)
+        if found:
+            flush()
+            current = int(found.group(1))
+            if current in started:
+                if current == 1 and started != {1}:
+                    return {}
+                current = None
+                buf = []
+                continue
+            started.add(current)
+            buf = []
+            rest = found.group(2).strip(" |–-:")
+            if len(rest) > 40:
+                buf.append(rest)
+            continue
+        if current is not None:
+            buf.append(line)
+    flush()
+    return notes
+
+
+def kt_notes(ru, en, year):
+    for query in (ru, en):
+        if not query or query == "-":
+            continue
+        final, page = kt_post(query)
+        if not page or kt_blocked(final, page):
+            continue
+        chosen = kt_choose(page, ru, en, year)
+        if not chosen:
+            continue
+        section, film_id = chosen
+        opener = urllib.request.build_opener()
+        url = "https://www.kino-teatr.ru/kino/movie/%s/%s/content/" % (section, film_id)
+        try:
+            final, content = http_text(opener, url)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            continue
+        if kt_blocked(final, content):
+            continue
+        notes = kt_parse(content)
+        if notes:
+            return notes
+    return {}
+
+
+def kt_pick(notes, season, episode, counts):
+    if season <= 1:
+        return notes.get(episode, "")
+    if any(step not in counts for step in range(1, season)):
+        return ""
+    absolute = sum(counts[step] for step in range(1, season)) + episode
+    return notes.get(absolute, "")
+
+
+def episode_notes(film_id, season, wanted, ru, en, year):
+    notes = {}
+    counts = {}
+    titles = {}
+    if str(film_id).isdigit():
+        try:
+            notes, counts, titles = kp_notes(film_id, season, wanted)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            notes, counts, titles = {}, {}, {}
+    missing = [number for number in wanted if number not in notes]
+    if missing and (ru or en):
+        try:
+            extra = kt_notes(ru, en, year)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError):
+            extra = {}
+        for number in missing:
+            text = kt_pick(extra, season, number, counts)
+            if text:
+                notes[number] = text
+    return notes, titles
 
 
 def short_english(film, file_en, file_ru):
@@ -616,6 +952,30 @@ def main():
     try:
         if cmd == "search" and len(sys.argv) == 5:
             search(sys.argv[2], sys.argv[3], sys.argv[4])
+            return
+        if cmd == "show-search" and len(sys.argv) == 3:
+            search_show(sys.argv[2])
+            return
+        if cmd == "show-genre" and len(sys.argv) == 4:
+            print(wiki_genre(sys.argv[2], sys.argv[3], "show") or "NONE")
+            return
+        if cmd == "episode-notes" and len(sys.argv) == 8:
+            wanted = []
+            for piece in sys.argv[4].split(","):
+                piece = piece.strip()
+                if piece.isdigit():
+                    wanted.append(int(piece))
+            notes, titles = episode_notes(
+                sys.argv[2], int(sys.argv[3]), wanted, sys.argv[5], sys.argv[6], sys.argv[7]
+            )
+            numbers = sorted(set(notes) | set(titles))
+            if not numbers:
+                print("NONE")
+                return
+            for number in numbers:
+                title = titles.get(number, "").replace("\t", " ")
+                line = notes.get(number, "").replace("\t", " ")
+                sys.stdout.write("%d\t%s\t%s\n" % (number, title, line))
             return
         if cmd == "propose" and len(sys.argv) == 3:
             propose(sys.argv[2])

@@ -16,18 +16,13 @@ PY="$SCRIPT_DIR/../lib/tag-movie.py"
 genres=(
   "Фильмы ужасов"
   "Фантастика"
-  "Фэнтези"
-  "Боевик"
-  "Триллер"
-  "Драма"
-  "Комедия"
-  "Мультфильм"
-  "Приключения"
-  "Криминал"
-  "Детектив"
-  "Мелодрама"
-  "Семейный"
-  "Военный"
+  "Для всей семьи"
+  "Психоз"
+  "Триллеры"
+  "Драмы"
+  "Комедии"
+  "Мультфильмы"
+  "Биографии"
 )
 
 banner() {
@@ -47,6 +42,12 @@ need() {
 
 trim() {
   python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFC", sys.argv[1]).strip())' "$1"
+}
+
+is_skip() {
+  local value
+  value=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  [[ "$value" == "s" || "$value" == "skip" ]]
 }
 
 confirm_yes() {
@@ -195,12 +196,17 @@ pick_genre() {
   echo "${C_MUTED}This word is what the TV app will show.${C_RESET}"
   while true; do
     if [[ -n "$genre_default" ]]; then
-      printf "${C_PROMPT}Genre number [Enter = %s]:${C_RESET} " "$genre_default"
+      printf "${C_PROMPT}Genre number [Enter = %s, s = skip]:${C_RESET} " "$genre_default"
     else
-      printf "${C_PROMPT}Genre number:${C_RESET} "
+      printf "${C_PROMPT}Genre number (s to skip):${C_RESET} "
     fi
     IFS= read -r ans || exit 1
     ans=$(trim "$ans")
+    if is_skip "$ans"; then
+      ANS=""
+      echo "Genre skipped."
+      return 0
+    fi
     if [[ -z "$ans" && -n "$genre_default" ]]; then
       ANS=$genre_default
       return 0
@@ -215,13 +221,22 @@ pick_genre() {
 pick_cover() {
   local query typed out first rest shown path idx choice
   while true; do
+    if [[ ! -d "$COVER_DIR" ]]; then
+      echo "No cover folder: $COVER_DIR"
+    fi
     if [[ -n "$prev_query" ]]; then
-      printf "${C_PROMPT}Cover search [%s]:${C_RESET} " "$prev_query"
+      printf "${C_PROMPT}Cover search [%s] (s to skip):${C_RESET} " "$prev_query"
     else
-      printf "${C_PROMPT}Cover search:${C_RESET} " 
+      printf "${C_PROMPT}Cover search (s to skip):${C_RESET} "
     fi
     IFS= read -r typed || exit 1
     typed=$(trim "$typed")
+    if is_skip "$typed"; then
+      ANS_PATH=""
+      ANS_NAME=""
+      echo "Cover skipped."
+      return 0
+    fi
     if [[ -z "$typed" ]]; then
       if [[ -n "$prev_query" ]]; then
         query=$prev_query
@@ -295,9 +310,15 @@ PY
     done
     echo "${C_HEAD}${SEP}${C_RESET}"
     while true; do
-      printf "${C_PROMPT}Cover number (0 to search again):${C_RESET} " 
+      printf "${C_PROMPT}Cover number (0 to search again, s to skip):${C_RESET} "
       IFS= read -r choice || exit 1
       choice=$(trim "$choice")
+      if is_skip "$choice"; then
+        ANS_PATH=""
+        ANS_NAME=""
+        echo "Cover skipped."
+        return 0
+      fi
       if [[ "$choice" == "0" ]]; then
         break
       fi
@@ -684,12 +705,23 @@ take_poster() {
 }
 
 manual_film() {
-  local src=$1 ru en part year title genre cover cover_name
+  local src=$1 ru en part year title genre cover cover_name value
   while true; do
     while true; do
-      ask_required "Russian title:"
-      ru=$ANS
-      piece_ok "$ru" && break
+      printf "${C_PROMPT}Russian title (s to skip this file):${C_RESET} "
+      IFS= read -r value || exit 1
+      value=$(trim "$value")
+      if is_skip "$value"; then
+        return 1
+      fi
+      if [[ -z "$value" ]]; then
+        echo "Enter something."
+        continue
+      fi
+      if piece_ok "$value"; then
+        ru=$value
+        break
+      fi
     done
     ask_english ""
     en=$ANS
@@ -734,17 +766,18 @@ data = json.loads(raw.decode("utf-8"))[0]
 bad = []
 if data.get("Title") != title:
     bad.append("title")
-if data.get("Genre") != genre:
+if genre and data.get("Genre") != genre:
     bad.append("genre")
 if str(data.get("ContentCreateDate")) != year:
     bad.append("year")
 if data.get("MediaType") != "Movie":
     bad.append("movie")
-got = subprocess.check_output(["exiftool", "-b", "-CoverArt", path])
-with open(cover, "rb") as fh:
-    want = fh.read()
-if got != want:
-    bad.append("cover")
+if cover:
+    got = subprocess.check_output(["exiftool", "-b", "-CoverArt", path])
+    with open(cover, "rb") as fh:
+        want = fh.read()
+    if got != want:
+        bad.append("cover")
 if bad:
     sys.stdout.write("Tag check failed: %s\n" % ", ".join(bad))
     raise SystemExit(1)
@@ -766,17 +799,30 @@ cover_jpeg() {
 
 write_tags() {
   local src=$1 title=$2 year=$3 genre=$4 cover=$5
-  if ! cover_jpeg "$cover"; then
-    echo "Could not prepare the cover."
-    return 1
+  local -a extra=()
+  if [[ -n "$genre" ]]; then
+    extra+=(-Genre="$genre")
+  fi
+  if [[ -n "$cover" ]]; then
+    if ! cover_jpeg "$cover"; then
+      echo "Could not prepare the cover."
+      return 1
+    fi
+    extra+=(-CoverArt= "-CoverArt<=$EMBED_COVER")
+  fi
+  if [[ ${#extra[@]} -eq 0 ]]; then
+    exiftool -q -m -overwrite_original -api LargeFileSupport=1 \
+      -Title="$title" \
+      "-ContentCreateDate#=$year" \
+      -MediaType=Movie \
+      "$src"
+    return
   fi
   exiftool -q -m -overwrite_original -api LargeFileSupport=1 \
     -Title="$title" \
     "-ContentCreateDate#=$year" \
-    -Genre="$genre" \
     -MediaType=Movie \
-    -CoverArt= \
-    "-CoverArt<=$EMBED_COVER" \
+    "${extra[@]}" \
     "$src"
 }
 
@@ -785,8 +831,8 @@ need exiftool
 need sips
 
 if [[ ! -d "$COVER_DIR" ]]; then
-  echo "No cover folder: $COVER_DIR"
-  exit 1
+  echo "No cover folder yet: $COVER_DIR"
+  echo "A poster download creates it. s skips the cover."
 fi
 
 files=()
@@ -846,7 +892,8 @@ echo "${C_MUTED}The file name is looked up on Kinopoisk.${C_RESET}"
 echo "${C_MUTED}Enter keeps the title and the genre. A number picks another genre. n changes the name.${C_RESET}"
 echo "${C_MUTED}Example: Пила 1 [Saw] 2004${C_RESET}"
 echo "${C_MUTED}No English title: n, then 0, then - on the English line.${C_RESET}"
-echo "${C_MUTED}The poster is saved as png in Pictures/Video.${C_RESET}"
+echo "${C_MUTED}The poster is saved as png in Pictures/Video. s skips a cover.${C_RESET}"
+echo "${C_MUTED}No internet: type the name, or s to skip that file.${C_RESET}"
 
 plan_src=()
 plan_title=()
@@ -866,18 +913,24 @@ for src in "${chosen[@]}"; do
   status=0
   load_propose "${src#./}" || status=$?
   if [[ "$status" -eq 1 ]]; then
-    echo "Kinopoisk did not answer."
-    manual_film "$src"
+    echo "Kinopoisk did not answer. Type the name, or s to skip this file."
+    if ! manual_film "$src"; then
+      echo "Skipped: ${src#./}"
+    fi
     continue
   fi
   if [[ "$status" -ne 0 ]]; then
-    echo "No film found for this file name."
-    manual_film "$src"
+    echo "No film found for this file name. Type the name, or s to skip this file."
+    if ! manual_film "$src"; then
+      echo "Skipped: ${src#./}"
+    fi
     continue
   fi
   if [[ -z "$sure_line" && ${#list_lines[@]} -eq 0 ]]; then
-    echo "No film found for this file name."
-    manual_film "$src"
+    echo "No film found for this file name. Type the name, or s to skip this file."
+    if ! manual_film "$src"; then
+      echo "Skipped: ${src#./}"
+    fi
     continue
   fi
   if [[ -n "$sure_line" ]]; then
@@ -885,7 +938,9 @@ for src in "${chosen[@]}"; do
   else
     echo "Several films match. Pick one."
     if ! choose_other "0 types the name. A number picks a film."; then
-      manual_film "$src"
+      if ! manual_film "$src"; then
+        echo "Skipped: ${src#./}"
+      fi
       continue
     fi
   fi
@@ -905,13 +960,18 @@ for src in "${chosen[@]}"; do
     show_genre_list
     while true; do
       if [[ -n "$PROP_GENRE" ]]; then
-        printf "${C_PROMPT}Genre number [Enter = %s, n = name]:${C_RESET} " "$PROP_GENRE"
+        printf "${C_PROMPT}Genre number [Enter = %s, n = name, s = skip]:${C_RESET} " "$PROP_GENRE"
       else
-        printf "${C_PROMPT}Genre number (n = name):${C_RESET} "
+        printf "${C_PROMPT}Genre number (n = name, s = skip):${C_RESET} "
       fi
       IFS= read -r genre_choice || exit 1
       genre_choice=$(trim "$genre_choice")
       genre_lower=$(printf '%s' "$genre_choice" | tr '[:upper:]' '[:lower:]')
+      if is_skip "$genre_choice"; then
+        PROP_GENRE=""
+        echo "Genre skipped."
+        break 2
+      fi
       if [[ -z "$genre_choice" && -n "$PROP_GENRE" ]]; then
         break 2
       fi
@@ -940,12 +1000,25 @@ for src in "${chosen[@]}"; do
   remember_plan "$src" "$CARD_TITLE" "$PROP_GENRE" "$ANS_PATH" "$ANS_NAME"
 done
 
+if [[ ${#plan_src[@]} -eq 0 ]]; then
+  echo "Nothing to write."
+  exit 0
+fi
+
 banner "Preview"
 i=0
 while [[ $i -lt ${#plan_src[@]} ]]; do
   echo "${plan_src[$i]#./}"
   echo "  → ${plan_title[$i]}.mp4"
-  echo "  ${plan_genre[$i]} · ${plan_year[$i]} · ${plan_cover_name[$i]}"
+  genre_shown=${plan_genre[$i]}
+  cover_shown=${plan_cover_name[$i]}
+  if [[ -z "$genre_shown" ]]; then
+    genre_shown="no genre"
+  fi
+  if [[ -z "$cover_shown" ]]; then
+    cover_shown="no cover"
+  fi
+  echo "  ${genre_shown} · ${plan_year[$i]} · ${cover_shown}"
   i=$((i + 1))
 done
 echo
