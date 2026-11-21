@@ -11,6 +11,7 @@ inprogress/*
 *.avi
 *.webm
 *.m4a
+*.m4b
 *.mp3
 *.flac
 *.wav

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Write show, season, episode, year, genre, one cover, and each episode's own description into mp4 files.
+# Episode title and description: 2sub.movie first, then Kinopoisk, then kino-teatr.ru.
 # File names stay as they are. Video and audio are not reencoded.
 set -euo pipefail
 

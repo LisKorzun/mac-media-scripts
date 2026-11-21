@@ -811,15 +811,138 @@ def kt_pick(notes, season, episode, counts):
     return notes.get(absolute, "")
 
 
+def sub_get(url):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept": "application/json",
+        "Accept-Language": "ru",
+    })
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def sub_year(value):
+    match = re.search(r"(?:19|20)\d{2}", str(value or ""))
+    return match.group(0) if match else ""
+
+
+def sub_pick(hits, ru, en, year):
+    best = None
+    best_score = 0
+    for hit in hits or []:
+        src = hit.get("_source") or {}
+        if src.get("post_type") != "series":
+            continue
+        start = sub_year(src.get("year"))
+        if year and start and start != str(year):
+            continue
+        title_ru = src.get("title_ru") or ""
+        title_en = src.get("title_en") or src.get("title_orig") or ""
+        score = 0
+        if ru and norm(title_ru) == norm(ru):
+            score += 4
+        elif ru and loose(norm(ru), norm(title_ru)):
+            score += 2
+        if en and en not in ("-", ru) and norm(title_en) == norm(en):
+            score += 3
+        elif en and en not in ("-", ru) and loose(norm(en), norm(title_en)):
+            score += 1
+        if year and start == str(year):
+            score += 2
+        if score > best_score:
+            best_score = score
+            best = src
+    if best_score < 4:
+        return None
+    return best
+
+
+def sub_show(ru, en, year):
+    for query in (ru, en):
+        if not query or query == "-":
+            continue
+        url = "https://2sub.movie/wp-json/yo/v1/search?" + urllib.parse.urlencode({"q": query})
+        try:
+            data = sub_get(url)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            continue
+        chosen = sub_pick(data.get("hits") or [], ru, en, year)
+        if chosen and chosen.get("slug"):
+            return chosen
+    return None
+
+
+def sub_text(row):
+    for key in ("overview", "description", "ruOverview", "plot"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
+def sub_episodes(slug):
+    slug = (slug or "").strip().strip("/")
+    if not re.fullmatch(r"[a-z0-9-]+", slug):
+        return {}
+    opener = urllib.request.build_opener()
+    _final, page = http_text(opener, "https://2sub.movie/series/%s/" % slug)
+    match = re.search(r"this\.data = (\[.*?\]);", page or "", re.S)
+    if not match:
+        return {}
+    try:
+        rows = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    found = {}
+    for row in rows:
+        try:
+            season = int(row.get("season_number"))
+            number = int(row.get("episode_number"))
+        except (TypeError, ValueError):
+            continue
+        title = episode_title(row.get("ruTitle") or row.get("displayTitle"), row.get("title"))
+        text = sub_text(row)
+        if title or text:
+            found[(season, number)] = (title, text)
+    return found
+
+
+def sub_fill(ru, en, year, season, wanted, notes, titles):
+    show = sub_show(ru, en, year)
+    if not show:
+        return
+    episodes = sub_episodes(show.get("slug"))
+    for number in wanted:
+        title, text = episodes.get((int(season), int(number)), ("", ""))
+        if title:
+            titles[number] = title
+        if text:
+            notes[number] = text
+
+
 def episode_notes(film_id, season, wanted, ru, en, year):
     notes = {}
-    counts = {}
     titles = {}
-    if str(film_id).isdigit():
+    counts = {}
+    try:
+        sub_fill(ru, en, year, season, wanted, notes, titles)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        pass
+    need_text = [number for number in wanted if number not in notes]
+    need_title = [number for number in wanted if number not in titles]
+    if (need_text or need_title) and str(film_id).isdigit():
         try:
-            notes, counts, titles = kp_notes(film_id, season, wanted)
+            kp_text, counts, kp_titles = kp_notes(film_id, season, wanted)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-            notes, counts, titles = {}, {}, {}
+            kp_text, counts, kp_titles = {}, {}, {}
+        for number in need_title:
+            title = kp_titles.get(number, "")
+            if title:
+                titles[number] = title
+        for number in need_text:
+            text = kp_text.get(number, "")
+            if text:
+                notes[number] = text
     missing = [number for number in wanted if number not in notes]
     if missing and (ru or en):
         try:

@@ -298,6 +298,21 @@ if [[ ${#sel_sub[@]} -gt 0 ]]; then
   echo "  subs-enc  mov_text"
 fi
 echo "${C_HEAD}${SEP}${C_RESET}"
+py_lang="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/set-lang.py"
+DEF_AUDIO=""
+DEF_SUB=""
+if [[ -f "$py_lang" ]]; then
+  set +e
+  choice=$(python3 "$py_lang" ask)
+  ask_rc=$?
+  set -e
+  if [[ "$ask_rc" -ne 0 ]]; then
+    echo "Cancelled"
+    exit 1
+  fi
+  DEF_AUDIO=$(printf '%s\n' "$choice" | sed -n '1p')
+  DEF_SUB=$(printf '%s\n' "$choice" | sed -n '2p')
+fi
 printf "${C_PROMPT}Start conversion? [Y/n]:${C_RESET} "
 read -r conf
 conf=${conf:-Y}
@@ -333,5 +348,9 @@ cmd+=(-movflags +faststart "$out")
 "${cmd[@]}"
 
 xattr -c "$out" 2>/dev/null || true
+if [[ -n "${DEF_AUDIO:-}" && -n "${DEF_SUB:-}" ]]; then
+  python3 "$py_lang" apply "$out" "$DEF_AUDIO" "$DEF_SUB"
+  xattr -c "$out" 2>/dev/null || true
+fi
 
 picked "Done: ${out#./}"

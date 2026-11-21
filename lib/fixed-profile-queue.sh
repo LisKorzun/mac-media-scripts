@@ -352,10 +352,15 @@ encode_one() {
     return "$rc"
   fi
   xattr -c "$out" 2>/dev/null || true
-  local py
+  local py lang_py
   py="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fix-subs.py"
+  lang_py="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/set-lang.py"
   if [[ -f "$py" ]]; then
     python3 "$py" apply "$out" || echo "subtitle letter fix failed"
+    xattr -c "$out" 2>/dev/null || true
+  fi
+  if [[ -f "$lang_py" && -n "${DEF_AUDIO:-}" && -n "${DEF_SUB:-}" ]]; then
+    python3 "$lang_py" apply "$out" "$DEF_AUDIO" "$DEF_SUB" || echo "default tracks were not set"
     xattr -c "$out" 2>/dev/null || true
   fi
   return 0
@@ -550,6 +555,22 @@ run_fixed_profile_queue() {
     echo "  subs-enc  $ENCODE_SUBS_LINE"
   fi
   echo "${C_HEAD}${SEP}${C_RESET}"
+  local py_lang choice
+  py_lang="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/set-lang.py"
+  DEF_AUDIO=""
+  DEF_SUB=""
+  if [[ -f "$py_lang" ]]; then
+    set +e
+    choice=$(python3 "$py_lang" ask)
+    local ask_rc=$?
+    set -e
+    if [[ "$ask_rc" -ne 0 ]]; then
+      echo "Cancelled"
+      exit 1
+    fi
+    DEF_AUDIO=$(printf '%s\n' "$choice" | sed -n '1p')
+    DEF_SUB=$(printf '%s\n' "$choice" | sed -n '2p')
+  fi
   printf "${C_PROMPT}Start queue (${total} file(s))? [Y/n]:${C_RESET} "
   read -r conf
   conf=${conf:-Y}

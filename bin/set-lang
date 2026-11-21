@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Choose which audio and subtitle language starts when a file opens.
+set -euo pipefail
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+need ffmpeg
+need ffprobe
+need python3
+exec python3 "$SCRIPT_DIR/../lib/set-lang.py" "$@"

@@ -336,7 +336,7 @@ def apply_file(path):
             si += 1
         if si:
             cmd += ["-disposition:s:0", "default"]
-        cmd += ["-c:v", "copy", "-c:a", "copy", dest]
+        cmd += ["-c:v", "copy", "-c:a", "copy", "-max_interleave_delta", "28800000000", dest]
         subprocess.check_call(cmd)
         os.replace(dest, path)
         return total, notes
