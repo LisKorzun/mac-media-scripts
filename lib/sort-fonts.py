@@ -3,22 +3,47 @@
 import os
 import re
 import sys
+import urllib.parse
 
 EXTS = {".woff", ".woff2", ".ttf", ".otf", ".otc", ".ttc"}
 HEX_TAIL = re.compile(r"(?:\.[0-9a-fA-F]{12,})+$")
 DIGIT_TAIL = re.compile(r"\d{8,}$")
 HASH_TOKEN = re.compile(r"^(?:[0-9a-fA-F]{12,}|\d{8,})$")
 BAD = re.compile(r'[\x00-\x1f<>:"/\\|?*]+')
-WORDS = tuple(sorted({
-    "extrablack", "extrabold", "extralight", "extrathin",
-    "ultrablack", "ultrabold", "ultralight", "ultrathin",
-    "semibold", "semilight", "demibold", "hairline",
-    "black", "bold", "medium", "regular", "normal",
-    "light", "thin", "heavy", "book", "roman",
-    "italic", "oblique",
-    "condensed", "compressed", "expanded", "extended",
-    "narrow", "wide", "upright",
-}, key=len, reverse=True))
+CANON = {
+    "extrablack": "ExtraBlack",
+    "extrabold": "ExtraBold",
+    "extralight": "ExtraLight",
+    "extrathin": "ExtraThin",
+    "ultrablack": "UltraBlack",
+    "ultrabold": "UltraBold",
+    "ultralight": "UltraLight",
+    "ultrathin": "UltraThin",
+    "semibold": "SemiBold",
+    "semilight": "SemiLight",
+    "demibold": "DemiBold",
+    "hairline": "Hairline",
+    "black": "Black",
+    "bold": "Bold",
+    "medium": "Medium",
+    "regular": "Regular",
+    "normal": "Normal",
+    "light": "Light",
+    "thin": "Thin",
+    "heavy": "Heavy",
+    "book": "Book",
+    "roman": "Roman",
+    "italic": "Italic",
+    "oblique": "Oblique",
+    "condensed": "Condensed",
+    "compressed": "Compressed",
+    "expanded": "Expanded",
+    "extended": "Extended",
+    "narrow": "Narrow",
+    "wide": "Wide",
+    "upright": "Upright",
+}
+WORDS = tuple(sorted(CANON, key=len, reverse=True))
 
 
 def die(message):
@@ -53,7 +78,87 @@ def is_style(token):
     return True
 
 
+def camel(text):
+    parts = [part for part in re.sub(r"\s+", " ", text).strip().split(" ") if part]
+    if not parts:
+        return ""
+    out = []
+    for word in parts:
+        if word[:1].islower():
+            word = word[:1].upper() + word[1:]
+        out.append(word)
+    return "".join(out)
+
+
+def canon_style(token):
+    low = token.casefold()
+    i = 0
+    parts = []
+    while i < len(low):
+        matched = False
+        for word in WORDS:
+            if low.startswith(word, i):
+                parts.append(CANON[word])
+                i += len(word)
+                matched = True
+                break
+        if not matched:
+            if token[:1].islower():
+                return token[:1].upper() + token[1:]
+            return token
+    return "".join(parts)
+
+
+def flat_name(text):
+    letters = [char for char in text if char.isalpha()]
+    return len(letters) > 1 and not any(char.isupper() for char in letters[1:])
+
+
+def ps_family(path):
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        return ""
+    try:
+        font = TTFont(path, fontNumber=0)
+    except Exception:
+        return ""
+    try:
+        ps = ""
+        for rec in font["name"].names:
+            if rec.nameID != 6:
+                continue
+            try:
+                val = rec.toUnicode().strip()
+            except Exception:
+                continue
+            if not val:
+                continue
+            ps = val
+            if rec.platformID == 3:
+                break
+    finally:
+        font.close()
+    if not ps:
+        return ""
+    family, _style = split_family(ps.replace(" ", "").replace("_", "-"))
+    return family
+
+
+def prettify(family, style, path):
+    family = camel(family)
+    if style:
+        style = canon_style(style)
+    if family and flat_name(family):
+        ps = camel(ps_family(path))
+        folded = lambda name: re.sub(r"[\s-]", "", name).casefold()
+        if ps and folded(ps) == folded(family):
+            family = ps
+    return family, style
+
+
 def clean_stem(stem):
+    stem = urllib.parse.unquote(stem).replace("%", "")
     prev = None
     while stem != prev:
         prev = stem
@@ -144,6 +249,7 @@ def build(folder):
     items = []
     skips = []
     for name in files:
+        path = os.path.join(folder, name)
         stem, ext = os.path.splitext(name)
         stem = sanitize(clean_stem(stem))
         if not stem:
@@ -157,6 +263,7 @@ def build(folder):
             continue
         items.append({
             "src": name,
+            "path": path,
             "stem": stem,
             "family": family,
             "style": style,
@@ -169,8 +276,13 @@ def build(folder):
             known.setdefault(item["family"].casefold(), item["family"])
     peel_shared(items, known)
     for item in items:
-        item["family"] = sanitize(item["family"])
-        item["style"] = sanitize(item["style"])
+        family, style = prettify(
+            sanitize(item["family"]),
+            sanitize(item["style"]),
+            item["path"],
+        )
+        item["family"] = family
+        item["style"] = style
     items = [item for item in items if item["family"]]
     canon_names(items, existing)
 

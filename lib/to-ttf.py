@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # woff/woff2 in this folder -> ttf with the same name. Subfolders are not read.
 import os
+import re
 import sys
 import tempfile
 
@@ -132,13 +133,90 @@ def apply(folder, makes):
         try:
             convert(src_abs, tmp)
             os.replace(tmp, dest_abs)
+            os.chmod(dest_abs, 0o644)
         except Exception as err:
             if os.path.exists(tmp):
                 os.remove(tmp)
             print("skip\t%s\t%s" % (field(src), field(str(err))))
             continue
         done += 1
+    unique_ps(folder)
     print("done\t%d" % done)
+
+
+def read_ps(path):
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(path)
+    try:
+        chosen = ""
+        for rec in font["name"].names:
+            if rec.nameID != 6:
+                continue
+            try:
+                val = rec.toUnicode().strip()
+            except Exception:
+                continue
+            if not val:
+                continue
+            chosen = val
+            if rec.platformID == 3:
+                break
+        return chosen
+    finally:
+        font.close()
+
+
+def ps_ok(text):
+    if not text or len(text) > 63 or not text.isascii():
+        return False
+    return re.fullmatch(r"[A-Za-z0-9._-]+", text) is not None
+
+
+def write_ps(path, ps_name):
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(path)
+    try:
+        found = False
+        for rec in font["name"].names:
+            if rec.nameID == 6:
+                rec.string = ps_name
+                found = True
+        if not found:
+            font["name"].setName(ps_name, 6, 3, 1, 1033)
+        font.save(path)
+    finally:
+        font.close()
+    os.chmod(path, 0o644)
+
+
+def unique_ps(folder):
+    paths = []
+    for name in os.listdir(folder):
+        if name.startswith(".") or not name.lower().endswith(".ttf"):
+            continue
+        path = os.path.join(folder, name)
+        if os.path.isfile(path) and not os.path.islink(path):
+            paths.append(path)
+    groups = {}
+    for path in paths:
+        try:
+            ps_name = read_ps(path)
+        except Exception:
+            continue
+        groups.setdefault(ps_name, []).append(path)
+    for ps_name, group in groups.items():
+        if len(group) < 2 or not ps_name:
+            continue
+        for path in group:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            if stem == ps_name or not ps_ok(stem):
+                continue
+            try:
+                write_ps(path, stem)
+            except Exception:
+                continue
 
 
 def main():

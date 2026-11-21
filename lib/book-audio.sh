@@ -49,6 +49,9 @@ run_book_audio() {
     echo "${C_MUTED}Copies for the LG TV and Books. Track, author, narrator. Source files stay.${C_RESET}"
   fi
   echo "${C_MUTED}Every audio file in this folder is a chapter, in name order.${C_RESET}"
+  if [[ "$mode" == "m4b" ]]; then
+    echo "${C_MUTED}A file with a description keeps that name. The rest are numbered 1, 2, 3.${C_RESET}"
+  fi
   echo "${C_MUTED}${count} file(s): ${first} … ${last}${C_RESET}"
 
   banner "Chapters"

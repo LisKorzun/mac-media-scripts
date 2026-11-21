@@ -20,6 +20,10 @@
 Имя
   Срезается конец «.хеш.хеш» (12+ hex) и слипшиеся цифры в конце (8+).
   Подчёркивание между названием и начертанием становится дефисом.
+  %20 и прочие проценты снимаются. Пробелы склеиваются в CamelCase: TT Masters → TTMasters.
+  Название начинается с большой буквы. Сплошные строчные, если внутри шрифта
+  есть верблюжье имя, берутся оттуда: texgyreadventor → TeXGyreAdventor.
+  Начертание пишется с больших букв: bold → Bold, bolditalic → BoldItalic.
   Начертание — последнее слово, если это Regular, Bold, Italic, Oblique,
   Thin, Light, ExtraLight, SemiBold, Black и такие же составные
   (BoldItalic, BoldOblique, ExtraLightItalic).

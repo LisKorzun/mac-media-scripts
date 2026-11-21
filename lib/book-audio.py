@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # One folder of chapter audio -> an Apple Books M4B, or tagged MP3 copies.
+import json
 import os
 import re
 import shutil
@@ -10,6 +11,8 @@ import tempfile
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac"}
 M4B_RATE = "96k"
 MP3_RATE = "128k"
+# A chapter name already stored in the file. The filename is not one of these.
+LABEL_KEYS = ("title", "subtitle", "description", "comment", "synopsis")
 
 
 def die(message):
@@ -105,6 +108,37 @@ def audio_info(path):
     if len(lines) < 3:
         die("No audio stream: %s" % os.path.basename(path))
     return lines[0], lines[1], lines[2]
+
+
+def track_tags(path):
+    raw = capture([
+        "ffprobe", "-v", "error",
+        "-show_entries", "format_tags",
+        "-of", "json", path,
+    ])
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    tags = data.get("format", {}).get("tags") or {}
+    return {str(key).casefold(): str(value).strip() for key, value in tags.items()}
+
+
+def chapter_label(path, index, reserved):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    skip = {stem.casefold()}
+    for word in reserved:
+        text = (word or "").strip()
+        if text:
+            skip.add(text.casefold())
+    tags = track_tags(path)
+    for key in LABEL_KEYS:
+        text = tags.get(key, "")
+        if text and text.casefold() not in skip:
+            return text
+    return str(index)
 
 
 def duration_ms(path):
@@ -206,14 +240,15 @@ def write_m4b(folder, files, title, author, author_sort, narrator, genre):
     ]
     if narrator:
         lines.append("composer=%s" % meta_escape(narrator))
-    for path, length in zip(files, durations):
+    reserved = (title, author, narrator, genre)
+    for index, (path, length) in enumerate(zip(files, durations), 1):
         end = cursor + length
         lines.append("")
         lines.append("[CHAPTER]")
         lines.append("TIMEBASE=1/1000")
         lines.append("START=%d" % cursor)
         lines.append("END=%d" % end)
-        lines.append("title=%s" % meta_escape(os.path.splitext(os.path.basename(path))[0]))
+        lines.append("title=%s" % meta_escape(chapter_label(path, index, reserved)))
         cursor = end
     concat = []
     for path in files:
