@@ -17,7 +17,7 @@ WORDS = tuple(sorted({
     "light", "thin", "heavy", "book", "roman",
     "italic", "oblique",
     "condensed", "compressed", "expanded", "extended",
-    "narrow", "wide", "display", "upright",
+    "narrow", "wide", "upright",
 }, key=len, reverse=True))
 
 
@@ -65,11 +65,31 @@ def clean_stem(stem):
     return stem
 
 
-def parse_known(stem):
+def peel_glued(token):
+    best = None
+    for cut in range(1, len(token)):
+        if not token[cut].isupper() or token[cut - 1].isupper():
+            continue
+        suffix = token[cut:]
+        if is_style(suffix) and (best is None or len(suffix) > len(best[0])):
+            best = (suffix, cut)
+    if not best:
+        return token, ""
+    return token[:best[1]], best[0]
+
+
+def split_family(stem):
     parts = [part for part in stem.split("-") if part]
-    if len(parts) >= 2 and is_style(parts[-1]):
-        return "-".join(parts[:-1]), parts[-1]
-    return stem, ""
+    styles = []
+    while len(parts) >= 2 and is_style(parts[-1]):
+        styles.append(parts.pop())
+    styles.reverse()
+    if parts:
+        head, glued = peel_glued(parts[-1])
+        if glued:
+            parts[-1] = head
+            styles.insert(0, glued)
+    return "-".join(parts), "".join(styles)
 
 
 def peel_shared(items, known):
@@ -129,7 +149,7 @@ def build(folder):
         if not stem:
             skips.append((name, "no name"))
             continue
-        family, style = parse_known(stem)
+        family, style = split_family(stem)
         family = sanitize(family)
         style = sanitize(style)
         if not family:

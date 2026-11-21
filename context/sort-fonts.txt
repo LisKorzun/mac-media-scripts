@@ -23,6 +23,9 @@
   Начертание — последнее слово, если это Regular, Bold, Italic, Oblique,
   Thin, Light, ExtraLight, SemiBold, Black и такие же составные
   (BoldItalic, BoldOblique, ExtraLightItalic).
+  То же слово, приклеенное без дефиса, тоже начертание:
+  GlacialIndifferenceBold → семья GlacialIndifference, начертание Bold.
+  Несколько начертаний через дефис склеиваются в одно: Bold-Italic → BoldItalic.
   Незнакомое последнее слово тоже начертание, если так называются
   ещё файлы или папка с этим названием уже есть.
   Один файл с незнакомым хвостом целиком: папка SomeFamily-Custom/SomeFamily-Custom.woff2.

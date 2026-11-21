@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Convert woff and woff2 in this folder to ttf. Subfolders are not read.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+C_WARN=$'\033[38;5;215m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/to-ttf.py"
+
+need python3
+
+here=$(pwd)
+plan=$(mktemp)
+trap 'rm -f "$plan"' EXIT
+
+set +e
+python3 "$PY" plan "$here" >"$plan"
+plan_code=$?
+set -e
+if [[ "$plan_code" -eq 2 ]]; then
+  echo "No web fonts in this folder."
+  echo "cd into the font folder, then run to-ttf."
+  exit 1
+fi
+if [[ "$plan_code" -ne 0 ]]; then
+  cat "$plan" >&2
+  exit "$plan_code"
+fi
+
+make_n=0
+skip_n=0
+banner "Will write:"
+while IFS=$'\t' read -r kind src dest; do
+  [[ "$kind" == "make" ]] || continue
+  make_n=$((make_n + 1))
+  echo "  ${src}  →  ${dest}"
+done <"$plan"
+if [[ "$make_n" -eq 0 ]]; then
+  echo "${C_MUTED}  (none)${C_RESET}"
+fi
+
+banner "Left as they are:"
+while IFS=$'\t' read -r kind src reason; do
+  [[ "$kind" == "skip" ]] || continue
+  skip_n=$((skip_n + 1))
+  echo "${C_WARN}  ${src}  (${reason})${C_RESET}"
+done <"$plan"
+if [[ "$skip_n" -eq 0 ]]; then
+  echo "${C_MUTED}  (none)${C_RESET}"
+fi
+echo "${C_HEAD}${SEP}${C_RESET}"
+echo "${C_MUTED}ttf appears next to the web font. The web font stays. Files in subfolders stay put.${C_RESET}"
+
+if [[ "$make_n" -eq 0 ]]; then
+  echo "Nothing to convert."
+  exit 0
+fi
+
+printf "${C_PROMPT}Write %d ttf file(s)? [Y/n]:${C_RESET} " "$make_n"
+read -r conf
+conf=${conf:-Y}
+case "$conf" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+done_n=0
+while IFS=$'\t' read -r kind a b; do
+  case "$kind" in
+    done) done_n=$a ;;
+    skip)
+      echo "${C_WARN}skip: ${a} (${b})${C_RESET}"
+      ;;
+  esac
+done < <(python3 "$PY" apply "$here")
+picked "Done. $done_n file(s)"
