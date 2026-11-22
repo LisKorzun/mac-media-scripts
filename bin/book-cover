@@ -61,7 +61,7 @@ fi
 echo "${C_MUTED}Portrait: ${portrait}. White band below, title in Angelica, up to 3 lines.${C_RESET}"
 
 banner "Title"
-echo "${C_MUTED}Enter keeps the value in brackets. Type / where a line should break.${C_RESET}"
+echo "${C_MUTED}Enter keeps the title on one line. Type / where a line should break.${C_RESET}"
 title=$(ask "Book title" "$title")
 while [[ -z "$title" ]]; do
   echo "Enter a book title."

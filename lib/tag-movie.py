@@ -1129,7 +1129,10 @@ def main():
                 ru_title, en_title = titles.get(number, ("", ""))
                 title = episode_title(ru_title, en_title).replace("\t", " ")
                 line = notes.get(number, "").replace("\t", " ")
-                sys.stdout.write("%d\t%s\t%s\n" % (number, title, line))
+                sys.stdout.write(
+                    "%d\t%s\t%s\t%s\t%s\n"
+                    % (number, title, line, cell(ru_title), cell(en_title))
+                )
             return
         if cmd == "propose" and len(sys.argv) == 3:
             propose(sys.argv[2])

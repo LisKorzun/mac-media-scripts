@@ -162,7 +162,8 @@ def cover_crop(image, width, height):
 
 def explicit_lines(title):
     if "/" not in title:
-        return None
+        line = re.sub(r"\s+", " ", title).strip().upper()
+        return [line] if line else None
     parts = [re.sub(r"\s+", " ", part).strip(" ") for part in title.split("/")]
     if not parts or any(not part for part in parts) or len(parts) > 3:
         die("Use 1 to 3 lines. Separate them with /")

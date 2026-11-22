@@ -50,6 +50,8 @@ is_yes() {
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PACK_PY="$SCRIPT_DIR/../lib/pack-books.py"
 BOOK_PY="$SCRIPT_DIR/../lib/book-audio.py"
+# shellcheck source=../lib/book-audio.sh
+source "$SCRIPT_DIR/../lib/book-audio.sh"
 COVER_PY="$SCRIPT_DIR/../lib/book-cover.py"
 SET_PY="$SCRIPT_DIR/../lib/set-cover.py"
 
@@ -381,7 +383,7 @@ choose_work_portrait() {
 }
 
 add_plan() {
-  plans+=("$1${US}$2${US}$3${US}$4${US}$5${US}$6${US}$7")
+  plans+=("$1${US}$2${US}$3${US}$4${US}$5${US}$6${US}$7${US}$8")
 }
 
 ask_book() {
@@ -406,10 +408,10 @@ ask_book() {
         if [[ "$pictures" -gt 1 && -z "$portrait_name" ]]; then
           portrait_name=$(choose_work_portrait "$current") || return 1
         fi
-        echo "${C_MUTED}Type / where the cover should break. Enter keeps an automatic layout.${C_RESET}"
+        echo "${C_MUTED}One line stays one line. Type / where the cover should break.${C_RESET}"
         cover_title=$(ask "Cover title" "$title")
         [[ -z "$cover_title" ]] && cover_title=$title
-        add_plan cover "$current" "$title" "$narrator" "" "$cover_title" "$portrait_name"
+        add_plan cover "$current" "$title" "$narrator" "" "$cover_title" "$portrait_name" ""
       else
         picked "Already packed"
       fi
@@ -434,7 +436,7 @@ ask_book() {
   fi
   cover_title=$title
   if [[ -n "$portrait_name" || -n "$shared_portrait" ]]; then
-    echo "${C_MUTED}Type / where the cover should break. Enter keeps an automatic layout.${C_RESET}"
+    echo "${C_MUTED}One line stays one line. Type / where the cover should break.${C_RESET}"
     cover_title=$(ask "Cover title" "$title")
     [[ -z "$cover_title" ]] && cover_title=$title
   else
@@ -455,11 +457,15 @@ ask_book() {
   echo "Folder      $folder"
   echo "In the file $reader"
   echo "File        $file"
+  local labels
+  labels=$(
+    cd -- "$current" && BOOK_TITLE="$title" BOOK_YEAR="$year" BOOK_NARRATOR="$narrator" ask_chapter_labels
+  ) || return 1
   go=$(ask "Pack this book" "y")
   if ! is_yes "$go"; then
     return 0
   fi
-  add_plan full "$current" "$title" "$narrator" "$year" "$cover_title" "$portrait_name"
+  add_plan full "$current" "$title" "$narrator" "$year" "$cover_title" "$portrait_name" "$labels"
 }
 
 place_book() {
@@ -547,6 +553,7 @@ encode_book() (
   local year="$5"
   local cover_title="$6"
   local portrait_name="$7"
+  local labels="${8:-}"
   local portrait=""
   place_book "$current" "$title" "$narrator"
   if [[ -n "$portrait_name" && -f "$portrait_name" ]]; then
@@ -562,6 +569,7 @@ encode_book() (
       BOOK_NARRATOR="$narrator" \
       BOOK_GENRE="$genre" \
       BOOK_YEAR="$year" \
+      BOOK_CHAPTER_LABELS="$labels" \
       python3 "$BOOK_PY" m4b
     BOOK_TITLE="$title" \
       BOOK_AUTHOR="$author_short" \
@@ -569,6 +577,7 @@ encode_book() (
       BOOK_NARRATOR="$narrator" \
       BOOK_GENRE="$genre" \
       BOOK_YEAR="$year" \
+      BOOK_CHAPTER_LABELS="$labels" \
       python3 "$BOOK_PY" mp3
   fi
   apply_cover "$portrait" "$cover_title"
@@ -576,14 +585,14 @@ encode_book() (
 )
 
 run_plans() {
-  local plan mode current title narrator year cover_title portrait_name
+  local plan mode current title narrator year cover_title portrait_name labels
   local total=${#plans[@]} n=0 ok=0
   caffeinate -is -w $$ >/dev/null 2>&1 &
   for plan in "${plans[@]}"; do
     n=$((n+1))
-    IFS=$'\x1f' read -r mode current title narrator year cover_title portrait_name <<< "$plan"
+    IFS=$'\x1f' read -r mode current title narrator year cover_title portrait_name labels <<< "$plan"
     banner "$n / $total  ${title:-$current}"
-    if encode_book "$mode" "$current" "$title" "$narrator" "$year" "$cover_title" "$portrait_name"; then
+    if encode_book "$mode" "$current" "$title" "$narrator" "$year" "$cover_title" "$portrait_name" "$labels"; then
       ok=$((ok+1))
       picked "Packed"
     else

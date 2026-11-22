@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mp4: write show, season, episode, year, genre, one cover, and each episode's own description.
 # Episode title and description: 2sub.movie first, then Kinopoisk, then kino-teatr.ru.
-# mp4 names stay as they are. Video and audio are not reencoded.
+# mp4 file name becomes "S01E01 · Episode title" in one language, same question as mkv.
 # mkv: rename to "S01E01 · Episode title". One language for the folder, Russian or English.
 # Nothing is written inside the mkv.
 set -euo pipefail
@@ -469,22 +469,13 @@ title_key=()
 title_text=()
 
 split_tabs() {
-  local line=$1 rest
+  local line=$1
   F1=""
   F2=""
   F3=""
-  if [[ "$line" != *$'\t'* ]]; then
-    F1=$line
-    return 0
-  fi
-  F1=${line%%$'\t'*}
-  rest=${line#*$'\t'}
-  if [[ "$rest" != *$'\t'* ]]; then
-    F2=$rest
-    return 0
-  fi
-  F2=${rest%%$'\t'*}
-  F3=${rest#*$'\t'}
+  F4=""
+  F5=""
+  IFS=$'\t' read -r F1 F2 F3 F4 F5 <<< "$line"
 }
 
 load_notes() {
@@ -513,6 +504,11 @@ load_notes() {
     if [[ -n "$F3" ]]; then
       note_key+=("$season:$F1")
       note_text+=("$F3")
+    fi
+    if [[ -n "$F4" || -n "$F5" ]]; then
+      name_key+=("$season:$F1")
+      name_ru+=("$F4")
+      name_en+=("$F5")
     fi
   done <<< "$out"
 }
@@ -1002,7 +998,7 @@ if [[ "$RENAME" -eq 1 ]]; then
   echo "${C_MUTED}Season and episode come from the file name. The file will be renamed.${C_RESET}"
   echo "${C_MUTED}No internet: s leaves the files unchanged.${C_RESET}"
 else
-  echo "${C_MUTED}Season and episode come from the file name. The file name stays.${C_RESET}"
+  echo "${C_MUTED}Season and episode come from the file name. The episode title is added to the file name.${C_RESET}"
   echo "${C_MUTED}No internet: Enter types the year by hand. s leaves the files unchanged.${C_RESET}"
 fi
 searched=0
@@ -1110,7 +1106,32 @@ while [[ $i -lt ${#plan_season[@]} ]]; do
 done
 fi
 
+pick_title_lang
+if [[ "$TITLE_LANG" == "en" ]]; then
+  picked "File name: English"
+else
+  picked "File name: Russian"
+fi
+if [[ ${#name_key[@]} -eq 0 ]]; then
+  echo "Looking up episode titles…"
+  name_key=()
+  name_ru=()
+  name_en=()
+  seen="|"
+  i=0
+  while [[ $i -lt ${#plan_season[@]} ]]; do
+    season=${plan_season[$i]}
+    i=$((i + 1))
+    case "$seen" in
+      *"|$season|"*) continue ;;
+    esac
+    seen+="$season|"
+    load_names "$season"
+  done
+fi
+
 banner "Preview"
+plan_file_new=()
 i=0
 while [[ $i -lt ${#plan_src[@]} ]]; do
   title_for "${plan_season[$i]}:${plan_episode[$i]}"
@@ -1119,6 +1140,37 @@ while [[ $i -lt ${#plan_src[@]} ]]; do
   fi
   printf "S%02dE%02d · %s\n" "${plan_season[$i]}" "${plan_episode[$i]}" "$ANS"
   echo "  ${plan_src[$i]#./}"
+  name_for "${plan_season[$i]}:${plan_episode[$i]}"
+  new=""
+  if [[ -n "$ANS" ]]; then
+    new=$(episode_filename "$ANS" "${plan_season[$i]}" "${plan_episode[$i]}" "${plan_src[$i]}")
+  fi
+  if [[ -z "$ANS" ]]; then
+    echo "  ${C_MUTED}No title in this language. Name stays.${C_RESET}"
+  fi
+  if [[ -z "$new" || "$new" == "EMPTY" || "$new" == "SAME" ]]; then
+    plan_file_new+=("")
+  else
+    dest="./$new"
+    taken=0
+    if [[ -e "$dest" ]]; then
+      taken=1
+    fi
+    j=0
+    while [[ $j -lt ${#plan_file_new[@]} ]]; do
+      if [[ -n "${plan_file_new[$j]}" && "${plan_file_new[$j]}" == "$new" ]]; then
+        taken=1
+      fi
+      j=$((j + 1))
+    done
+    if [[ "$taken" -eq 1 ]]; then
+      echo "  ${C_MUTED}A file with this name is already here. This name stays.${C_RESET}"
+      plan_file_new+=("")
+    else
+      echo "  → $new"
+      plan_file_new+=("$new")
+    fi
+  fi
   genre_shown=$PROP_GENRE
   cover_shown=$ANS_NAME
   if [[ -z "$genre_shown" ]]; then
@@ -1140,7 +1192,7 @@ if [[ "$skip_n" -gt 0 ]]; then
   echo "${C_MUTED}Skipped: $skip_n${C_RESET}"
 fi
 echo
-echo "${C_MUTED}File names stay. The same cover is written into each file.${C_RESET}"
+echo "${C_MUTED}The episode title is added to the file name. The same cover is written into each file.${C_RESET}"
 if ! confirm_yes "Write the show into these files?"; then
   echo "Cancelled"
   exit 0
@@ -1154,6 +1206,7 @@ fi
 fail=0
 i=0
 while [[ $i -lt ${#plan_src[@]} ]]; do
+  file_i=$i
   src=${plan_src[$i]}
   season=${plan_season[$i]}
   episode=${plan_episode[$i]}
@@ -1182,7 +1235,18 @@ while [[ $i -lt ${#plan_src[@]} ]]; do
   fi
   rm -f "$EMBED_COVER"
   xattr -c -- "$src" 2>/dev/null || true
-  picked "$(basename "$src")"
+  new_name=${plan_file_new[$file_i]}
+  if [[ -n "$new_name" ]]; then
+    dest="./$new_name"
+    if [[ -e "$dest" ]] || ! mv -n -- "$src" "$dest" || [[ -e "$src" ]]; then
+      echo "Could not rename: $(basename "$src")"
+      fail=$((fail + 1))
+      continue
+    fi
+    picked "$(basename "$dest")"
+  else
+    picked "$(basename "$src")"
+  fi
 done
 
 echo

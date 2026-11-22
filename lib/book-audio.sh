@@ -15,10 +15,56 @@ ask() {
   printf '%s' "$reply"
 }
 
+# Prints the labels on stdout. Questions and the contents line go to stderr.
+ask_chapter_labels() {
+  local pattern_out sample groups words labels parts count part line
+  labels=""
+  sample=""
+  groups=""
+  words=""
+  pattern_out=$(BOOK_TITLE="${BOOK_TITLE:-}" python3 "$BOOK_PY" pattern || true)
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      sample) sample=$value ;;
+      groups) groups=$value ;;
+      words) words=$value ;;
+    esac
+  done <<< "$pattern_out"
+  if [[ -n "$groups" ]]; then
+    echo "${C_MUTED}The file names have numbers like ${sample}. They can be at the start, in the middle, or at the end.${C_RESET}" >&2
+    echo "${C_MUTED}Type what each number is, with a comma between them. ${groups} names.${C_RESET}" >&2
+    echo "${C_MUTED}Example: Глава, Фрагмент. Enter keeps the book title.${C_RESET}" >&2
+    labels=$(ask "Numbers mean" "")
+    while [[ -n "$labels" ]]; do
+      count=0
+      IFS=',' read -ra parts <<< "$labels"
+      for part in "${parts[@]}"; do
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        [[ -n "$part" ]] && count=$((count + 1))
+      done
+      if [[ "$count" -eq "$groups" ]]; then
+        break
+      fi
+      echo "Type ${groups} names, with a comma between them, or press Enter." >&2
+      labels=$(ask "Numbers mean" "")
+    done
+  elif [[ -n "$words" ]]; then
+    echo "${C_MUTED}The file names already name the part and the chapter.${C_RESET}" >&2
+  fi
+  if [[ -n "${BOOK_YEAR:-}" ]]; then
+    line=$(BOOK_TITLE="${BOOK_TITLE:-}" BOOK_YEAR="${BOOK_YEAR}" BOOK_NARRATOR="${BOOK_NARRATOR:-}" BOOK_CHAPTER_LABELS="$labels" python3 "$BOOK_PY" contents || true)
+    if [[ -n "$line" ]]; then
+      echo "${C_MUTED}Contents: ${line}${C_RESET}" >&2
+    fi
+  fi
+  printf '%s' "$labels"
+}
+
 run_book_audio() {
   local mode="$1"
   local guess_out count first last title author sort narrator reencode
-  local genre reply num name year books file_name author_full reader
+  local genre reply num name year books file_name author_full reader labels
 
   need python3
   need ffmpeg
@@ -50,7 +96,7 @@ run_book_audio() {
   fi
   echo "${C_MUTED}Every audio file in this folder is a chapter, in name order.${C_RESET}"
   if [[ "$mode" == "m4b" ]]; then
-    echo "${C_MUTED}Contents match the file names: 01. Title · 1863. A description replaces the title.${C_RESET}"
+    echo "${C_MUTED}Contents: 01. Title · 1863. A part or chapter replaces the title, and then the year is left out.${C_RESET}"
   else
     echo "${C_MUTED}File names are 01. Title · 1863. The number stays in front so the TV sorts 2 before 10.${C_RESET}"
   fi
@@ -126,6 +172,8 @@ run_book_audio() {
     genre="Audiobook"
   fi
 
+  labels=$(BOOK_TITLE="$title" BOOK_YEAR="$year" BOOK_NARRATOR="$narrator" ask_chapter_labels)
+
   books="${author} · ${title} · ${year}"
   file_name="${author} · ${title} [${narrator}] · ${year}"
 
@@ -171,6 +219,7 @@ run_book_audio() {
   BOOK_NARRATOR="$narrator" \
   BOOK_GENRE="$genre" \
   BOOK_YEAR="$year" \
+  BOOK_CHAPTER_LABELS="$labels" \
   python3 "$BOOK_PY" "$mode"
 
   picked "Done"

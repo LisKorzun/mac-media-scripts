@@ -151,14 +151,146 @@ def fold(text):
     return unicodedata.normalize("NFC", text or "").casefold()
 
 
+def same_text(left, right):
+    return unicodedata.normalize("NFC", left or "") == unicodedata.normalize("NFC", right or "")
+
+
 def bare_index(text, index):
     token = text.strip()
     return token.isdigit() and int(token) == index
 
 
+# "Читает …" stored as Windows-1251 and read as Latin-1 becomes "×èòàåò".
+def repair_text(text):
+    if not text or re.search(r"[А-Яа-яЁё]", text):
+        return text
+    try:
+        fixed = text.encode("latin-1").decode("cp1251")
+    except UnicodeError:
+        return text
+    letters = [ch for ch in fixed if ch.isalpha()]
+    if not letters:
+        return text
+    cyrillic = [ch for ch in letters if re.match(r"[А-Яа-яЁё]", ch)]
+    if len(cyrillic) * 2 >= len(letters):
+        return fixed
+    return text
+
+
+def looks_broken(text):
+    if repair_text(text) != text:
+        return True
+    if re.search(r"[А-Яа-яЁё]", text or ""):
+        return False
+    odd = re.findall(r"[\u00c0-\u00ff]", text or "")
+    letters = re.findall(r"[A-Za-z\u00c0-\u00ff]", text or "")
+    return len(letters) >= 4 and len(odd) * 2 >= len(letters)
+
+
+def readable(text):
+    text = repair_text(text)
+    if looks_broken(text):
+        die("The contents would show the wrong letters: %s" % text)
+    return text
+
+
+STRUCT_WORD = re.compile(
+    r"(?i)(?<![0-9A-Za-zА-Яа-яЁё])(часть|глава|фрагмент|part|chapter|fragment)\s+([0-9]+|[IVXLCDM]+)"
+)
+CREDIT_WORD = re.compile(
+    r"(?i)(?:читает|читал|читала|исполняет|начитыва\w*|озвучива\w*|narrated\s+by|read\s+by|narrator)\b"
+)
+STRUCT_NAMES = {
+    "часть": "Часть",
+    "глава": "Глава",
+    "фрагмент": "Фрагмент",
+    "part": "Part",
+    "chapter": "Chapter",
+    "fragment": "Fragment",
+}
+
+
+def structure_label(text):
+    parts = []
+    for match in STRUCT_WORD.finditer(text or ""):
+        word = STRUCT_NAMES.get(match.group(1).casefold(), match.group(1).capitalize())
+        number = match.group(2)
+        if number.isdigit():
+            number = str(int(number))
+        else:
+            number = number.upper()
+        parts.append("%s %s" % (word, number))
+    return ". ".join(parts)
+
+
+def stem_body(stem):
+    return re.sub(r"^\s*\d+\s*(?:[.\-–—]\s+|\s+)", "", stem or "").strip()
+
+
+# 02-01 may sit at the start, in the middle, or at the end. A lone leading 01 is the file order.
+NUMBER_GROUP = re.compile(r"(?<!\d)(\d{1,3}(?:[-._]\d{1,3})+)(?!\d)")
+
+
+def number_groups(stem):
+    body = stem_body(stem)
+    if structure_label(stem):
+        return [], ""
+    found = NUMBER_GROUP.findall(body)
+    if len(found) != 1:
+        return [], ""
+    sample = found[0]
+    return re.split(r"[-._]", sample), sample
+
+
+def chapter_labels():
+    raw = os.environ.get("BOOK_CHAPTER_LABELS", "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def number_label(stem):
+    groups, _sample = number_groups(stem)
+    labels = chapter_labels()
+    if not groups or len(groups) != len(labels):
+        return ""
+    parts = []
+    for label, number in zip(labels, groups):
+        shown = str(int(number)) if number.isdigit() else number
+        parts.append("%s %s" % (label, shown))
+    return ". ".join(parts)
+
+
+def narrator_forms(narrator):
+    narrator = (narrator or "").strip()
+    if not narrator:
+        return []
+    forms = [narrator, surname_given(narrator)]
+    parts = name_parts(narrator)
+    if len(parts) >= 2:
+        forms.append("%s %s" % (parts[0], parts[-1]))
+        forms.append("%s %s" % (parts[-1], parts[0]))
+    return forms
+
+
+def is_credit(text, narrator):
+    repaired = repair_text(text).strip()
+    if not repaired:
+        return False
+    if CREDIT_WORD.match(repaired):
+        return True
+    blob = fold(repaired)
+    for name in narrator_forms(narrator):
+        folded = fold(name)
+        if folded:
+            blob = blob.replace(folded, " ")
+    blob = CREDIT_WORD.sub(" ", blob)
+    return re.sub(r"[^0-9a-zа-яё]+", "", blob) == ""
+
+
 def chapter_description(path, index, reserved):
     stem = os.path.splitext(os.path.basename(path))[0]
-    book = fold(reserved[0] if reserved else "")
+    title = reserved[0] if reserved else ""
+    narrator = reserved[3] if reserved and len(reserved) > 3 else ""
+    book = fold(title)
     skip = {fold(stem)}
     for word in reserved:
         text = (word or "").strip()
@@ -166,7 +298,10 @@ def chapter_description(path, index, reserved):
             skip.add(fold(text))
     tags = track_tags(path)
     for key in LABEL_KEYS:
-        text = tags.get(key, "")
+        text = repair_text(tags.get(key, ""))
+        found = structure_label(text)
+        if found:
+            return found
         if not text or fold(text) in skip or bare_index(text, index):
             continue
         match = re.match(r"^0*%d(?:\s*[.\-–—:]|\s+)\s*" % index, text)
@@ -177,14 +312,47 @@ def chapter_description(path, index, reserved):
         # "1886 - Смерть Ивана Ильича 1" repeats the book, it is not a chapter name.
         if book and book in fold(text):
             continue
+        if is_credit(text, narrator) or looks_broken(text):
+            continue
         return text
     return ""
 
 
-def contents_line(index, total, name, year):
+def chapter_name(path, index, reserved):
+    stem = repair_text(os.path.splitext(os.path.basename(path))[0])
+    found = structure_label(stem) or number_label(stem)
+    if found:
+        return found
+    return chapter_description(path, index, reserved)
+
+
+def detect_pattern(files):
+    labels = []
+    tails = []
+    for path in files:
+        stem = repair_text(os.path.splitext(os.path.basename(path))[0])
+        label = structure_label(stem)
+        labels.append(label)
+        tails.append(number_groups(stem))
+    if labels and all(labels):
+        return "words", labels[0], 0
+    if any(labels):
+        return "", "", 0
+    counts = [len(groups) for groups, _sample in tails]
+    if not counts or any(count < 2 for count in counts) or len(set(counts)) != 1:
+        return "", "", 0
+    return "numbers", tails[0][1], counts[0]
+
+
+def contents_line(index, total, name, year, title=None):
     width = max(2, len(str(total)))
     number = "%0*d" % (width, index)
-    return "%s. %s%s%s" % (number, safe_filename(name), DOT, year)
+    shown = safe_filename(name)
+    book = name if title is None else title
+    # The year stays only beside the work title. A part or chapter has none.
+    if fold(shown) == fold(safe_filename(book)):
+        return "%s. %s%s%s" % (number, shown, DOT, year)
+    return "%s. %s" % (number, shown)
 
 
 def duration_ms(path):
@@ -376,6 +544,55 @@ def cmd_files():
         print("%d\t%s" % (index, os.path.basename(path)))
 
 
+def cmd_pattern():
+    files = chapters(os.getcwd())
+    if not files:
+        die("No audio files in %s" % os.getcwd())
+    kind, value, groups = detect_pattern(files)
+    if kind == "words":
+        print("words\t%s" % value)
+    elif kind == "numbers":
+        print("sample\t%s" % value)
+        print("groups\t%d" % groups)
+
+
+def cmd_contents():
+    files = chapters(os.getcwd())
+    if not files:
+        die("No audio files in %s" % os.getcwd())
+    title = env("BOOK_TITLE")
+    year = env("BOOK_YEAR")
+    narrator = env("BOOK_NARRATOR")
+    if not title or not re.fullmatch(r"\d{4}", year or ""):
+        die("Book title and year are required")
+    reserved = (title, "", "", narrator, "", year)
+    name = readable(chapter_name(files[0], 1, reserved) or title)
+    print(contents_line(1, len(files), name, year, title))
+
+
+def read_chapters(path):
+    raw = capture([
+        "ffprobe", "-v", "error", "-print_format", "json", "-show_chapters", path,
+    ])
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    found = []
+    for chapter in data.get("chapters") or []:
+        found.append((chapter.get("tags") or {}).get("title") or "")
+    return found
+
+
+def require_chapters(path, expected):
+    stored = read_chapters(path)
+    if len(stored) != len(expected) or any(not same_text(got, want) for got, want in zip(stored, expected)):
+        shown = stored[0] if stored else ""
+        die("The contents were stored with the wrong letters: %s" % shown)
+
+
 def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
     info = same_audio(files)
     heading = book_heading(author, title, year)
@@ -397,15 +614,19 @@ def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
     ]
     reserved = (title, heading, author, narrator, genre, year)
     total = len(files)
+    expected = []
     for index, (path, length) in enumerate(zip(files, durations), 1):
         end = cursor + length
-        name = chapter_description(path, index, reserved) or title
+        name = readable(chapter_name(path, index, reserved) or title)
+        label = contents_line(index, total, name, year, title)
+        readable(label)
+        expected.append(label)
         lines.append("")
         lines.append("[CHAPTER]")
         lines.append("TIMEBASE=1/1000")
         lines.append("START=%d" % cursor)
         lines.append("END=%d" % end)
-        lines.append("title=%s" % meta_escape(contents_line(index, total, name, year)))
+        lines.append("title=%s" % meta_escape(label))
         cursor = end
     concat = []
     for path in files:
@@ -434,6 +655,7 @@ def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
         rc = run(cmd)
         if rc != 0 or not os.path.isfile(partial):
             die("ffmpeg failed")
+        require_chapters(partial, expected)
         shutil.move(partial, final)
     clear_xattr(final)
     if shutil.which("exiftool"):
@@ -484,15 +706,16 @@ def write_mp3(folder, files, title, author, author_full, narrator, genre, year):
     reserved = (title, heading, author, narrator, genre, year)
     first_name = ""
     for index, path in enumerate(files, 1):
-        name = chapter_description(path, index, reserved) or title
-        label = contents_line(index, total, name, year)
+        name = readable(chapter_name(path, index, reserved) or title)
+        label = contents_line(index, total, name, year, title)
+        readable(label)
         dest = os.path.join(dest_dir, track_filename(index, total, title, year))
         if index == 1:
             first_name = os.path.basename(dest)
         codec = audio_info(path)[0]
         cmd = [
             "ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-y",
-            "-i", path, "-map", "0:a:0",
+            "-i", path, "-map", "0:a:0", "-map_metadata", "-1",
         ]
         if codec == "mp3":
             cmd += ["-c", "copy"]
@@ -523,6 +746,10 @@ def write_mp3(folder, files, title, author, author_full, narrator, genre, year):
             if os.path.isfile(dest):
                 os.remove(dest)
             continue
+        stored = track_tags(dest).get("title", "")
+        if not same_text(stored, label):
+            os.remove(dest)
+            die("The contents were stored with the wrong letters: %s" % stored)
         clear_xattr(dest)
     if failed:
         die("Failed: %s" % ", ".join(failed))
@@ -536,13 +763,19 @@ def has_encoder(name):
 
 def main():
     if len(sys.argv) < 2:
-        die("usage: book-audio.py guess|files|sort-key|year|author-full|reader|m4b|mp3")
+        die("usage: book-audio.py guess|files|pattern|contents|sort-key|year|author-full|reader|m4b|mp3")
     action = sys.argv[1]
     if action == "guess":
         cmd_guess()
         return
     if action == "files":
         cmd_files()
+        return
+    if action == "pattern":
+        cmd_pattern()
+        return
+    if action == "contents":
+        cmd_contents()
         return
     if action == "sort-key":
         cmd_sort_key()
