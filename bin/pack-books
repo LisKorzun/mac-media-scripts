@@ -40,6 +40,96 @@ ask() {
   printf '%s' "$reply"
 }
 
+trim() {
+  python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFC", sys.argv[1]).strip())' "$1"
+}
+
+ask_genre() {
+  local i g ans word
+  local -a genres
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    genres+=("$line")
+  done < <(python3 "$GENRE_PY" list)
+  if (( ${#genres[@]} == 0 )); then
+    echo "No genre list." >&2
+    exit 1
+  fi
+  echo "${C_MUTED}One genre for every book chosen this time.${C_RESET}" >&2
+  echo "${C_MUTED}Литература is a novel or stories, such as Tolstoy. Философия is an essay or a tract.${C_RESET}" >&2
+  i=1
+  for g in "${genres[@]}"; do
+    printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$i" "$g" >&2
+    i=$((i + 1))
+  done
+  printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$i" "своя" >&2
+  echo "${C_HEAD}${SEP}${C_RESET}" >&2
+  echo "${C_MUTED}A number from the list. своя asks for your own word.${C_RESET}" >&2
+  while true; do
+    printf "${C_PROMPT}Genre number:${C_RESET} " >&2
+    IFS= read -r ans || ans=""
+    ans=$(trim "$ans")
+    if [[ "$ans" == "$i" ]]; then
+      while true; do
+        printf "${C_PROMPT}Genre word:${C_RESET} " >&2
+        IFS= read -r word || word=""
+        if word=$(python3 "$GENRE_PY" word "$word"); then
+          printf '%s' "$word"
+          return 0
+        fi
+        echo "Type a genre word, without / or :." >&2
+      done
+    fi
+    if [[ "$ans" =~ ^[1-9][0-9]*$ ]] && ((10#$ans >= 1 && 10#$ans <= ${#genres[@]})); then
+      printf '%s' "${genres[$((10#$ans - 1))]}"
+      return 0
+    fi
+    echo "Type a number from the list." >&2
+  done
+}
+
+# Prints the cover title on stdout. Questions and the lines go to stderr.
+ask_cover_title() {
+  local title="$1"
+  local lines cover_title lines_out num line stored keep
+  echo "${C_MUTED}1  one line, for example Отец Сергий${C_RESET}" >&2
+  echo "${C_MUTED}2  two lines${C_RESET}" >&2
+  echo "${C_MUTED}3  three lines${C_RESET}" >&2
+  echo "${C_MUTED}Enter is 1. A / in the title places the break: Отец / Сергий${C_RESET}" >&2
+  while true; do
+    lines=$(ask "Lines" "1")
+    while [[ ! "$lines" =~ ^[123]$ ]]; do
+      echo "Type 1, 2, or 3." >&2
+      lines=$(ask "Lines" "1")
+    done
+    cover_title=$(ask "Cover title" "$title")
+    if [[ -z "$cover_title" ]]; then
+      cover_title=$title
+    fi
+    if ! lines_out=$(BOOK_TITLE="$cover_title" BOOK_COVER_LINES="$lines" python3 "$COVER_PY" lines); then
+      continue
+    fi
+    stored=""
+    echo "${C_MUTED}On the cover:${C_RESET}" >&2
+    while IFS=$'\t' read -r num line; do
+      if [[ "$num" == "stored" ]]; then
+        stored=$line
+        continue
+      fi
+      [[ -z "$num" ]] && continue
+      printf "${C_PROMPT}  %s${C_RESET}\n" "$line" >&2
+    done <<< "$lines_out"
+    if [[ -n "$stored" ]]; then
+      cover_title=$stored
+    fi
+    keep=$(ask "These lines" "y")
+    if is_yes "$keep"; then
+      break
+    fi
+  done
+  printf '%s' "$cover_title"
+}
+
 is_yes() {
   case "$1" in
     y|Y|yes|Yes|YES|д|Д|да|Да|ДА) return 0 ;;
@@ -54,6 +144,7 @@ BOOK_PY="$SCRIPT_DIR/../lib/book-audio.py"
 source "$SCRIPT_DIR/../lib/book-audio.sh"
 COVER_PY="$SCRIPT_DIR/../lib/book-cover.py"
 SET_PY="$SCRIPT_DIR/../lib/set-cover.py"
+GENRE_PY="$SCRIPT_DIR/../lib/set-genre.py"
 
 need python3
 need ffmpeg
@@ -93,7 +184,7 @@ load_works() {
   work_picked=()
   local listing name title narrator loose packed cover pictures picked
   listing=$(python3 "$PACK_PY" works) || return 1
-  while IFS=$'\t' read -r name title narrator loose packed cover pictures picked; do
+  while IFS=$'\x1f' read -r name title narrator loose packed cover pictures picked; do
     [[ -z "$name" ]] && continue
     work_name+=("$name")
     work_title+=("$title")
@@ -143,17 +234,26 @@ field_of() {
 
 ask_year() {
   local title="$1"
-  local found
+  local found note year_out
   echo "${C_MUTED}Looking up the year the work was written…${C_RESET}" >&2
-  found=$(BOOK_TITLE="$title" BOOK_AUTHOR="$author_full" python3 "$BOOK_PY" year | field_of year || true)
+  year_out=$(cd -- "$current" && BOOK_TITLE="$title" BOOK_AUTHOR="$author_full" python3 "$BOOK_PY" year || true)
+  found=$(printf '%s\n' "$year_out" | field_of year)
+  note=$(printf '%s\n' "$year_out" | field_of note)
   if [[ "$found" =~ ^[0-9]{4}$ ]]; then
+    if [[ "$note" == "files" ]]; then
+      echo "${C_MUTED}The year is in the file names. Enter keeps it.${C_RESET}" >&2
+    elif [[ "$note" == "folder" ]]; then
+      echo "${C_MUTED}The year is in the folder name. Enter keeps it.${C_RESET}" >&2
+    else
+      echo "${C_MUTED}Wikipedia: written in ${found}. Enter keeps it.${C_RESET}" >&2
+    fi
     found=$(ask "Year written" "$found")
   else
-    echo "${C_MUTED}No year found. Type the year the work was written.${C_RESET}" >&2
+    echo "${C_MUTED}No year found. Type four digits, the year the work was written.${C_RESET}" >&2
     found=$(ask "Year written" "")
   fi
   while [[ ! "$found" =~ ^[0-9]{4}$ ]]; do
-    echo "Four digits, for example 1863." >&2
+    echo "Type four digits, for example 1856." >&2
     found=$(ask "Year written" "")
   done
   printf '%s' "$found"
@@ -281,11 +381,7 @@ ask_author() {
   while [[ -z "$author_short" ]]; do
     author_short=$(ask "Author short" "")
   done
-  echo "${C_MUTED}One genre for every book chosen this time.${C_RESET}"
-  genre=$(ask "Genre" "Audiobook")
-  while [[ -z "$genre" ]]; do
-    genre=$(ask "Genre" "Audiobook")
-  done
+  genre=$(ask_genre)
   echo "${C_MUTED}After a book is packed, original chapters can move into $SOURCES. They are not deleted.${C_RESET}"
   move_sources=$(ask "Move original chapters into $SOURCES" "y")
 }
@@ -408,9 +504,7 @@ ask_book() {
         if [[ "$pictures" -gt 1 && -z "$portrait_name" ]]; then
           portrait_name=$(choose_work_portrait "$current") || return 1
         fi
-        echo "${C_MUTED}One line stays one line. Type / where the cover should break.${C_RESET}"
-        cover_title=$(ask "Cover title" "$title")
-        [[ -z "$cover_title" ]] && cover_title=$title
+        cover_title=$(ask_cover_title "$title")
         add_plan cover "$current" "$title" "$narrator" "" "$cover_title" "$portrait_name" ""
       else
         picked "Already packed"
@@ -426,19 +520,14 @@ ask_book() {
   while [[ -z "$title" ]]; do
     title=$(ask "Book title" "")
   done
-  narrator=$(ask "Narrator" "$narrator")
-  while [[ -z "$narrator" ]]; do
-    narrator=$(ask "Narrator" "")
-  done
+  narrator=$(cd -- "$current" && ask_narrator "$narrator")
   year=$(ask_year "$title")
   if [[ "$pictures" -gt 1 && -z "$portrait_name" ]]; then
     portrait_name=$(choose_work_portrait "$current") || return 1
   fi
   cover_title=$title
   if [[ -n "$portrait_name" || -n "$shared_portrait" ]]; then
-    echo "${C_MUTED}One line stays one line. Type / where the cover should break.${C_RESET}"
-    cover_title=$(ask "Cover title" "$title")
-    [[ -z "$cover_title" ]] && cover_title=$title
+    cover_title=$(ask_cover_title "$title")
   else
     echo "${C_MUTED}No portrait for this book. The cover will be skipped.${C_RESET}"
   fi
@@ -455,7 +544,16 @@ ask_book() {
     esac
   done <<< "$preview_out"
   echo "Folder      $folder"
-  echo "In the file $reader"
+  if [[ -z "$narrator" ]]; then
+    echo "In the file each file has its own"
+    echo "Album artist  $author_full"
+  elif [[ "$(python3 "$BOOK_PY" kind "$narrator" || true)" == "label" ]]; then
+    echo "In the file $narrator"
+    echo "Each mp3 keeps its reader"
+    echo "Album artist  $author_full"
+  else
+    echo "In the file $reader"
+  fi
   echo "File        $file"
   local labels
   labels=$(
@@ -473,7 +571,7 @@ place_book() {
   local title="$2"
   local narrator="$3"
   local line key value
-  if [[ -z "$title" || -z "$narrator" ]]; then
+  if [[ -z "$title" ]]; then
     cd -- "$current"
     return 0
   fi
@@ -561,26 +659,35 @@ encode_book() (
   elif [[ -n "$shared_portrait" ]]; then
     portrait="$shared_portrait"
   fi
+  # "if encode_book" turns set -e off inside this subshell, so each step is checked.
   if [[ "$mode" == full ]]; then
     echo "${C_MUTED}Encoding takes a while. A running time on the screen is progress.${C_RESET}"
-    BOOK_TITLE="$title" \
+    if ! BOOK_TITLE="$title" \
       BOOK_AUTHOR="$author_short" \
       BOOK_AUTHOR_FULL="$author_full" \
       BOOK_NARRATOR="$narrator" \
       BOOK_GENRE="$genre" \
       BOOK_YEAR="$year" \
       BOOK_CHAPTER_LABELS="$labels" \
-      python3 "$BOOK_PY" m4b
-    BOOK_TITLE="$title" \
+      python3 "$BOOK_PY" m4b; then
+      echo "The Books file was not written."
+      return 1
+    fi
+    if ! BOOK_TITLE="$title" \
       BOOK_AUTHOR="$author_short" \
       BOOK_AUTHOR_FULL="$author_full" \
       BOOK_NARRATOR="$narrator" \
       BOOK_GENRE="$genre" \
       BOOK_YEAR="$year" \
       BOOK_CHAPTER_LABELS="$labels" \
-      python3 "$BOOK_PY" mp3
+      python3 "$BOOK_PY" mp3; then
+      echo "The mp3 copies were not written."
+      return 1
+    fi
   fi
-  apply_cover "$portrait" "$cover_title"
+  if ! apply_cover "$portrait" "$cover_title"; then
+    return 1
+  fi
   move_originals
 )
 

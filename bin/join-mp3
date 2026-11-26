@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Join neighbouring MP3 files in this folder. Sound is copied, not re-encoded.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+ask() {
+  local label=$1
+  local default=$2
+  local reply
+  printf "${C_PROMPT}%s [%s]:${C_RESET} " "$label" "$default" >&2
+  read -r reply || reply=""
+  if [[ -z "$reply" ]]; then
+    reply=$default
+  fi
+  printf '%s' "$reply"
+}
+
+yes_answer() {
+  case "$1" in
+    y|Y|yes|Yes|д|Д|да|Да|"") return 0 ;;
+  esac
+  return 1
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+JOIN_PY="$SCRIPT_DIR/../lib/join-mp3.py"
+
+need ffmpeg
+need ffprobe
+need python3
+
+banner "Join mp3"
+echo "${C_MUTED}Several files of one story become one. Sound is copied, not re-encoded.${C_RESET}"
+echo "${C_MUTED}Numbers after them move back. Type the numbers on the left.${C_RESET}"
+
+count=0
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  count=$((count + 1))
+  printf '%2d  %s\n' "$count" "$name"
+done < <(python3 "$JOIN_PY" list)
+
+if (( count < 2 )); then
+  echo "Need at least two mp3 files."
+  exit 1
+fi
+
+choice=""
+plan=""
+while true; do
+  choice=$(ask "Files" "")
+  if [[ -z "$choice" ]]; then
+    echo "Type the numbers, for example 3-4."
+    continue
+  fi
+  if plan=$(python3 "$JOIN_PY" plan "$choice"); then
+    break
+  fi
+done
+
+out_name=""
+shift_by=""
+length=""
+takes=()
+moves=()
+keeps=()
+while IFS=$'\t' read -r key left right; do
+  [[ -z "$key" ]] && continue
+  case "$key" in
+    name) out_name=$left ;;
+    shift) shift_by=$left ;;
+    length) length=$left ;;
+    take) takes+=("$left") ;;
+    move) moves+=("$left"$'\t'"$right") ;;
+    keep) keeps+=("$left") ;;
+  esac
+done <<< "$plan"
+
+echo
+echo "${C_HEAD}Join${C_RESET}"
+if (( ${#takes[@]} > 0 )); then
+  for name in "${takes[@]}"; do
+    echo "  $name"
+  done
+fi
+echo "${C_MUTED}${length}. Sound is copied.${C_RESET}"
+
+typed=""
+while true; do
+  typed=$(ask "Name" "$out_name")
+  if [[ -n "$typed" ]]; then
+    break
+  fi
+  echo "Type a file name."
+done
+
+if (( ${#moves[@]} > 0 )); then
+  echo
+  echo "${C_MUTED}Numbers after these move back by ${shift_by}.${C_RESET}"
+  for row in "${moves[@]}"; do
+    old=${row%%$'\t'*}
+    new=${row#*$'\t'}
+    echo "  $old"
+    echo "${C_PICK}  → $new${C_RESET}"
+  done
+fi
+if (( ${#keeps[@]} > 0 )); then
+  for name in "${keeps[@]}"; do
+    echo "${C_MUTED}No number, left as is: $name${C_RESET}"
+  done
+fi
+
+answer=$(ask "Join" "y")
+if ! yes_answer "$answer"; then
+  echo "Nothing was changed."
+  exit 0
+fi
+
+result=$(python3 "$JOIN_PY" join "$choice" "$typed")
+done_name=""
+done_length=""
+while IFS=$'\t' read -r key left _right; do
+  [[ -z "$key" ]] && continue
+  case "$key" in
+    file) done_name=$left ;;
+    length) done_length=$left ;;
+  esac
+done <<< "$result"
+
+picked "Done: $done_name"
+echo "${C_MUTED}${done_length}${C_RESET}"

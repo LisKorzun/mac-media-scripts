@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Rename one mp3 in this folder and write that name into its title.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+ask() {
+  local label=$1
+  local default=$2
+  local reply
+  printf "${C_PROMPT}%s [%s]:${C_RESET} " "$label" "$default" >&2
+  read -r reply || reply=""
+  if [[ -z "$reply" ]]; then
+    reply=$default
+  fi
+  printf '%s' "$reply"
+}
+
+yes_answer() {
+  case "$1" in
+    y|Y|yes|Yes|д|Д|да|Да|"") return 0 ;;
+  esac
+  return 1
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/name-mp3.py"
+
+need ffmpeg
+need ffprobe
+need python3
+
+banner "Name mp3"
+echo "${C_MUTED}One file. The new name is also the title inside it.${C_RESET}"
+echo "${C_MUTED}Sound is copied.${C_RESET}"
+
+echo
+count=0
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  count=$((count + 1))
+  printf '%2d  %s\n' "$count" "$name"
+done < <(python3 "$PY" list)
+if (( count == 0 )); then
+  echo "No mp3 files in this folder."
+  exit 1
+fi
+number=$(ask "File" "")
+if [[ -z "$number" ]]; then
+  exit 0
+fi
+current=""
+inside=""
+show=$(python3 "$PY" show "$number") || exit 1
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    file) current=$value ;;
+    title) inside=$value ;;
+  esac
+done <<< "$show"
+echo "File   $current"
+echo "Title  ${inside:-empty}"
+stem=${current%.mp3}
+stem=${stem%.MP3}
+typed=$(ask "Name" "$stem")
+new_file=$typed
+if [[ "${new_file##*.}" != "mp3" && "${new_file##*.}" != "MP3" ]]; then
+  new_file="${typed}.mp3"
+fi
+new_title=${new_file%.mp3}
+new_title=${new_title%.MP3}
+echo
+echo "File   $new_file"
+echo "Title  $new_title"
+go=$(ask "Write this name" "y")
+if ! yes_answer "$go"; then
+  exit 0
+fi
+python3 "$PY" write "$number" "$typed"
+picked "Done"

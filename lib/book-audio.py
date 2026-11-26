@@ -68,18 +68,69 @@ def chapters(folder):
     return found
 
 
+def folder_label(name):
+    # A folder sometimes keeps a file ending, as in "….mp3". That ending is not part of the title.
+    name = unicodedata.normalize("NFC", name or "").strip()
+    stem, ext = os.path.splitext(name)
+    if ext.lower() in AUDIO_EXT | {".m4b"}:
+        return stem.strip()
+    return name
+
+
 def guess_folder(name):
+    name = folder_label(name)
+    # "Сеченов И.М. · Рефлексы головного мозга [Олег Федоров] · 1863"
+    pieces = [part.strip() for part in name.split(DOT)]
+    if len(pieces) >= 3 and re.fullmatch(r"\d{4}", pieces[-1] or ""):
+        body = DOT.join(pieces[1:-1]).strip()
+        bracket = re.fullmatch(r"(.+?) \[(.+)\]", body)
+        if bracket:
+            title = bracket.group(1).strip()
+            narrator = bracket.group(2).strip()
+        else:
+            title = body
+            narrator = ""
+        if title:
+            return {
+                "title": title,
+                "author": pieces[0],
+                "narrator": narrator,
+                "year": pieces[-1],
+            }
     match = re.match(
         r"^(?P<author>.+?)\s+[-–—]\s+(?P<title>.+?)(?:\s*\[(?P<narrator>[^\]]+)\])?\s*$",
         name,
     )
-    if not match:
-        return {"title": "", "author": "", "narrator": ""}
-    return {
-        "title": match.group("title").strip(),
-        "author": match.group("author").strip(),
-        "narrator": (match.group("narrator") or "").strip(),
-    }
+    if match:
+        title = match.group("title").strip()
+        narrator = (match.group("narrator") or "").strip()
+        # "Басни (Алексей Борзунов)": the parentheses are the reader, not the title.
+        if not narrator:
+            paren = re.fullmatch(r"(.+?)\s*\(([^)]+)\)", title)
+            if paren and person_name(paren.group(2)):
+                title = paren.group(1).strip()
+                narrator = paren.group(2).strip()
+        return {
+            "title": title,
+            "author": match.group("author").strip(),
+            "narrator": narrator,
+            "year": "",
+        }
+    # "Повесть _ Утро помещика" — the word before _ is the kind of book, not the title.
+    kind = re.fullmatch(
+        r"(?:повесть|роман|трактат|публицистика|рассказ|басни)\s*[_|]\s*(.+)",
+        name,
+        re.IGNORECASE,
+    )
+    if kind:
+        title = kind.group(1).strip()
+        narrator = ""
+        bracket = re.fullmatch(r"(.+?)\s*\[([^\]]+)\]", title)
+        if bracket:
+            title = bracket.group(1).strip()
+            narrator = bracket.group(2).strip()
+        return {"title": title, "author": "", "narrator": narrator, "year": ""}
+    return {"title": "", "author": "", "narrator": "", "year": ""}
 
 
 def safe_filename(title):
@@ -195,32 +246,309 @@ def readable(text):
 
 
 STRUCT_WORD = re.compile(
-    r"(?i)(?<![0-9A-Za-zА-Яа-яЁё])(часть|глава|фрагмент|part|chapter|fragment)\s+([0-9]+|[IVXLCDM]+)"
+    r"(?i)(?<![0-9A-Za-zА-Яа-яЁё])"
+    r"(части|часть|главы|глава|фрагменты|фрагмент|parts|part|chapters|chapter|fragments|fragment)"
+    r"\s+(\d+(?:\s*[-–—]\s*\d+)?|[IVXLCDM]+)"
 )
 CREDIT_WORD = re.compile(
     r"(?i)(?:читает|читал|читала|исполняет|начитыва\w*|озвучива\w*|narrated\s+by|read\s+by|narrator)\b"
 )
 STRUCT_NAMES = {
     "часть": "Часть",
+    "части": "Части",
     "глава": "Глава",
+    "главы": "Главы",
     "фрагмент": "Фрагмент",
+    "фрагменты": "Фрагменты",
     "part": "Part",
+    "parts": "Parts",
     "chapter": "Chapter",
+    "chapters": "Chapters",
     "fragment": "Fragment",
+    "fragments": "Fragments",
 }
+
+
+def pretty_number(token):
+    token = re.sub(r"\s+", "", token or "")
+    span = re.fullmatch(r"(\d+)[-–—](\d+)", token)
+    if span:
+        return "%s-%s" % (int(span.group(1)), int(span.group(2)))
+    if token.isdigit():
+        return str(int(token))
+    return token.upper()
 
 
 def structure_label(text):
     parts = []
     for match in STRUCT_WORD.finditer(text or ""):
         word = STRUCT_NAMES.get(match.group(1).casefold(), match.group(1).capitalize())
-        number = match.group(2)
-        if number.isdigit():
-            number = str(int(number))
-        else:
-            number = number.upper()
-        parts.append("%s %s" % (word, number))
-    return ". ".join(parts)
+        parts.append("%s %s" % (word, pretty_number(match.group(2))))
+    return omit_fragment_one(". ".join(parts))
+
+
+def omit_fragment_one(text):
+    # "Фрагмент 1" is the start of the chapter. "Фрагмент 2" stays, so the pieces differ.
+    parts = re.split(r"\. ", text or "")
+    if len(parts) < 2:
+        return text or ""
+    kept = [part for part in parts if part not in ("Фрагмент 1", "Fragment 1")]
+    if not kept or len(kept) == len(parts):
+        return text or ""
+    return ". ".join(kept)
+
+
+YEAR_LEAD = re.compile(r"^(?:1[0-9]{3}|20[0-2][0-9])\s*[.\-–—:]+\s*")
+# "01_01. 1904 - Одумайтесь!" is a part number, then the year and the title.
+INDEX_PREFIX = re.compile(r"^(\d{1,3}(?:[-._]\d{1,3})+)\.?\s+")
+TITLE_GAP = r"(?:\s*[.\-–—:·|]+\s*|\s+)"
+
+
+def strip_leading_title(body, title):
+    body = unicodedata.normalize("NFC", body or "").strip()
+    title = unicodedata.normalize("NFC", title or "").strip()
+    if not body or not title:
+        return body
+    if fold(body) == fold(title):
+        return ""
+    pattern = re.compile(r"^\s*" + re.escape(title) + TITLE_GAP, re.IGNORECASE)
+    match = pattern.match(body)
+    if not match:
+        return body
+    return body[match.end():].strip()
+
+
+def peel_book(body, title):
+    # "1889 - КРЕЙЦЕРОВА СОНАТА. Глава 1" keeps the chapter. The year and the book go.
+    body = unicodedata.normalize("NFC", body or "").strip()
+    for _ in range(3):
+        nxt = YEAR_LEAD.sub("", body).strip()
+        nxt = strip_leading_title(nxt, title)
+        nxt = nxt.strip(" .-–—·")
+        if nxt == body:
+            break
+        body = nxt
+    return re.sub(r"\s+", " ", body).strip(" .-–—·")
+
+
+def only_book_and_numbers(body, title):
+    folded = fold(body)
+    book = fold(title)
+    if not book or book not in folded:
+        return False
+    leftover = re.sub(r"[^0-9a-zа-яё]+", " ", folded.replace(book, " ", 1)).strip()
+    if not leftover:
+        return True
+    return all(token.isdigit() for token in leftover.split())
+
+
+def same_opening_word(body, title):
+    # "Мысли мудрый людей - 01 Январь" still starts as the book. It is not a chapter.
+    def words(text):
+        return [word for word in re.findall(r"[0-9A-Za-zА-Яа-яЁё]+", fold(text)) if len(word) > 2]
+    left = words(body)
+    right = words(title)
+    if not left or not right:
+        return False
+    return left[0] == right[0]
+
+
+def pretty_structure(text):
+    def repl(match):
+        word = STRUCT_NAMES.get(match.group(1).casefold(), match.group(1).capitalize())
+        return "%s %s" % (word, pretty_number(match.group(2)))
+    return STRUCT_WORD.sub(repl, text)
+
+
+def source_chapter(stem, book_title, narrator=""):
+    # The file name after the book title is the chapter, including "Эпилог" and "- 1".
+    # A bare 02-01 is not a title: the script asks what those numbers mean.
+    body = peel_book(stem_body(repair_text(stem or "")), book_title)
+    if re.fullmatch(r"\([^)]+\)", (body or "").strip()):
+        body = ""
+    if not body or (book_title and fold(body) == fold(book_title)):
+        return ""
+    if re.fullmatch(r"\d{1,4}", body) or re.fullmatch(r"\d{1,3}(?:[-._]\d{1,3})+", body):
+        return ""
+    if is_credit(body, narrator) or looks_broken(body) or only_book_and_numbers(body, book_title):
+        return ""
+    prefixed = re.match(r"^.+?\.\s*[-–—]\s*(.+)$", body)
+    if prefixed and prefixed.group(1).strip():
+        body = prefixed.group(1).strip()
+    if not structure_label(body) and same_opening_word(body, book_title):
+        return ""
+    shown = omit_fragment_one(pretty_structure(body))
+    shown = re.sub(r"\s+", " ", shown).strip(" .-–—·")
+    if not shown or (book_title and fold(shown) == fold(book_title)):
+        return ""
+    return unicodedata.normalize("NFC", shown)
+
+
+PART_WORDS = {
+    "притча": "Притча",
+    "день": "День",
+    "часть": "Часть",
+    "глава": "Глава",
+    "фрагмент": "Фрагмент",
+    "part": "Part",
+    "day": "Day",
+    "chapter": "Chapter",
+}
+PART_NAME = re.compile(
+    r"(?:\s+-\s+|\s+)(притча|день|часть|глава|фрагмент|part|day|chapter)\s+(\d+)\s*$",
+    re.IGNORECASE,
+)
+TRAIL_NUM = re.compile(r"\s+(\d{1,2})\s*$")
+TRAIL_NOTE = re.compile(r"\s*\(([^)]+)\)\s*$")
+TRAIL_NARR = re.compile(r"\s*\[([^\]]+)\]\s*$")
+
+
+def structure_only(text):
+    cleaned = STRUCT_WORD.sub(" ", text or "")
+    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "", cleaned) == ""
+
+
+def coded_index(stem):
+    body = unicodedata.normalize("NFC", stem_body(repair_text(stem or "")))
+    match = INDEX_PREFIX.match(body)
+    if not match:
+        return []
+    return re.split(r"[-._]", match.group(1))
+
+
+def file_year_and_body(stem, book_title):
+    body = unicodedata.normalize("NFC", stem_body(repair_text(stem or "")))
+    match = INDEX_PREFIX.match(body)
+    if match:
+        body = body[match.end():].strip()
+    match = YEAR_LEAD.match(body)
+    if not match:
+        return "", ""
+    year = re.match(r"(\d{4})", match.group(0)).group(1)
+    return year, peel_book(body, book_title)
+
+
+def piece_bits(body):
+    body = re.sub(r"\s+", " ", body or "").strip()
+    narrator = ""
+    match = TRAIL_NARR.search(body)
+    if match:
+        narrator = match.group(1).strip()
+        body = body[:match.start()].strip()
+    note = ""
+    match = TRAIL_NOTE.search(body)
+    if match:
+        note = match.group(1).strip()
+        body = body[:match.start()].strip()
+    word = ""
+    num = 0
+    match = PART_NAME.search(body)
+    if match:
+        word = PART_WORDS.get(match.group(1).casefold(), match.group(1).capitalize())
+        num = int(match.group(2))
+        body = body[:match.start()].strip(" -")
+    else:
+        match = TRAIL_NUM.search(body)
+        if match:
+            num = int(match.group(1))
+            body = body[:match.start()].strip()
+    return body, word, num, note, narrator
+
+
+def piece_key(year, work, note, narrator):
+    return (year, fold(work), fold(note), fold(narrator))
+
+
+def bare_number(stem, book_title):
+    # "1856 - Утро помещика 01" leaves only the trailing number.
+    body = unicodedata.normalize("NFC", stem_body(repair_text(stem or "")))
+    body = YEAR_LEAD.sub("", body).strip()
+    title = unicodedata.normalize("NFC", book_title or "").strip()
+    if title:
+        body = re.sub(
+            r"^\s*" + re.escape(title) + r"[!?…]*\s*",
+            "",
+            body,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    body = body.strip(" .-–—·!?…")
+    match = re.fullmatch(r"0*(\d{1,3})", body)
+    if not match:
+        return 0
+    return int(match.group(1))
+
+
+def part_word():
+    # "-" leaves the number out. One word, such as Глава, names it. Otherwise it stays Часть.
+    raw = os.environ.get("BOOK_CHAPTER_LABELS", "").strip()
+    if raw == "-":
+        return ""
+    labels = [part for part in chapter_labels() if part]
+    if len(labels) == 1:
+        return labels[0]
+    return "Часть"
+
+
+def bare_part(stem, book_title):
+    number = bare_number(stem, book_title)
+    if not number:
+        return ""
+    word = part_word()
+    if not word:
+        return ""
+    return "%s %s" % (word, number)
+
+
+def collection_piece(path, book_title):
+    # "01 1908 - Волк" keeps the title and that year. Split files become Часть.
+    # "Притча" and "День" stay those words. A chapter of the same book does not.
+    stem = repair_text(os.path.splitext(os.path.basename(path))[0])
+    year, body = file_year_and_body(stem, book_title)
+    if not year or not body or structure_only(body):
+        return ""
+    if book_title and fold(body) == fold(book_title):
+        return ""
+    work, word, num, note, narrator = piece_bits(body)
+    if not work:
+        return ""
+    groups = coded_index(stem)
+    index_num = int(groups[-1]) if groups and groups[-1].isdigit() else 0
+    as_part = False
+    if not num and not word and index_num:
+        num = index_num
+    if num and not word:
+        key = piece_key(year, work, note, narrator)
+        count = 0
+        for other in chapters(os.path.dirname(path)):
+            other_stem = repair_text(os.path.splitext(os.path.basename(other))[0])
+            other_year, other_body = file_year_and_body(other_stem, book_title)
+            if not other_year or not other_body or structure_only(other_body):
+                continue
+            other_work, other_word, other_num, other_note, other_narrator = piece_bits(other_body)
+            other_groups = coded_index(other_stem)
+            other_index = int(other_groups[-1]) if other_groups and other_groups[-1].isdigit() else 0
+            if other_num:
+                counted = not other_word
+            else:
+                counted = not other_word and other_index
+            if counted and piece_key(other_year, other_work, other_note, other_narrator) == key:
+                count += 1
+        as_part = count >= 2
+        if index_num and not piece_bits(body)[2]:
+            num = index_num if as_part else 0
+    label = work
+    if narrator:
+        label = "%s [%s]" % (label, narrator)
+    if note:
+        label = "%s (%s)" % (label, note)
+    if word and num:
+        label = "%s. %s %s" % (label, word, num)
+    elif as_part:
+        label = "%s. Часть %s" % (label, num)
+    elif num:
+        label = "%s %s" % (label, num)
+    return unicodedata.normalize("NFC", "%s%s%s" % (label, DOT, year))
 
 
 def stem_body(stem):
@@ -244,19 +572,61 @@ def number_groups(stem):
 
 def chapter_labels():
     raw = os.environ.get("BOOK_CHAPTER_LABELS", "")
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    # "-" means the number is only the file order. It is not written.
+    if not raw.strip() or raw.strip() == "-":
+        return []
+    # A blank before the comma skips that number: ", Глава" names only the last one.
+    return [part.strip() for part in raw.split(",")]
 
 
-def number_label(stem):
+def column_indexes(rows):
+    # A number that is the same on every file is not a chapter. 04_01_01 keeps 01_01.
+    if not rows:
+        return []
+    width = len(rows[0])
+    if width < 2 or any(len(row) != width for row in rows):
+        return []
+    vary = [index for index in range(width) if len({row[index] for row in rows}) > 1]
+    if len(vary) >= 2:
+        return vary
+    return list(range(width))
+
+
+def number_rows(files):
+    rows = []
+    for path in files:
+        stem = repair_text(os.path.splitext(os.path.basename(path))[0])
+        groups, _sample = number_groups(stem)
+        if len(groups) < 2:
+            return []
+        rows.append(groups)
+    if not rows or not column_indexes(rows):
+        return []
+    return rows
+
+
+def number_label(stem, folder=""):
     groups, _sample = number_groups(stem)
+    rows = number_rows(chapters(folder)) if folder else []
+    if rows:
+        groups = [groups[index] for index in column_indexes(rows)]
     labels = chapter_labels()
-    if not groups or len(groups) != len(labels):
+    if not groups or not any(labels):
+        return ""
+    # One word names the last number. Earlier numbers are left out.
+    if len(labels) < len(groups) and all(labels):
+        labels = [""] * (len(groups) - len(labels)) + labels
+    if len(labels) != len(groups):
         return ""
     parts = []
     for label, number in zip(labels, groups):
+        if not label:
+            continue
         shown = str(int(number)) if number.isdigit() else number
         parts.append("%s %s" % (label, shown))
-    return ". ".join(parts)
+    if not parts:
+        return ""
+    return omit_fragment_one(". ".join(parts))
 
 
 def narrator_forms(narrator):
@@ -304,6 +674,9 @@ def chapter_description(path, index, reserved):
             return found
         if not text or fold(text) in skip or bare_index(text, index):
             continue
+        # A comment that is only the reader's name is not a chapter.
+        if key == "comment" and person_name(text):
+            continue
         match = re.match(r"^0*%d(?:\s*[.\-–—:]|\s+)\s*" % index, text)
         if match:
             text = text[match.end():].strip()
@@ -320,7 +693,18 @@ def chapter_description(path, index, reserved):
 
 def chapter_name(path, index, reserved):
     stem = repair_text(os.path.splitext(os.path.basename(path))[0])
-    found = structure_label(stem) or number_label(stem)
+    numbered = number_label(stem, os.path.dirname(path))
+    if numbered:
+        return numbered
+    title = reserved[0] if reserved else ""
+    narrator = reserved[3] if reserved and len(reserved) > 3 else ""
+    part = bare_part(stem, title)
+    if part:
+        return part
+    piece = collection_piece(path, title)
+    if piece:
+        return piece
+    found = source_chapter(stem, title, narrator)
     if found:
         return found
     return chapter_description(path, index, reserved)
@@ -338,10 +722,25 @@ def detect_pattern(files):
         return "words", labels[0], 0
     if any(labels):
         return "", "", 0
-    counts = [len(groups) for groups, _sample in tails]
-    if not counts or any(count < 2 for count in counts) or len(set(counts)) != 1:
-        return "", "", 0
-    return "numbers", tails[0][1], counts[0]
+    rows = [groups for groups, _sample in tails]
+    if rows and all(len(groups) >= 2 for groups in rows):
+        indexes = column_indexes(rows)
+        if len(indexes) >= 2 and len({len(groups) for groups in rows}) == 1:
+            sample = "_".join(rows[0][index] for index in indexes)
+            return "numbers", sample, len(indexes)
+    title = env("BOOK_TITLE")
+    if title and not any(labels):
+        numbers = []
+        for path in files:
+            stem = repair_text(os.path.splitext(os.path.basename(path))[0])
+            number = bare_number(stem, title)
+            if not number:
+                numbers = []
+                break
+            numbers.append(number)
+        if len(numbers) >= 2:
+            return "tail", "%02d" % numbers[0], 1
+    return "", "", 0
 
 
 def contents_line(index, total, name, year, title=None):
@@ -372,7 +771,7 @@ def same_audio(paths):
     first = audio_info(paths[0])
     for path in paths[1:]:
         info = audio_info(path)
-        if info != first:
+        if info[0] != first[0] or info[1] != first[1]:
             die(
                 "%s is %s Hz %s ch %s; the first file is %s Hz %s ch %s"
                 % (
@@ -381,6 +780,30 @@ def same_audio(paths):
                 )
             )
     return first
+
+
+def stereo_inputs(files, tmp):
+    # The book is stereo. A mono file next to stereo files is widened here,
+    # because the join step needs the same channel count.
+    infos = [audio_info(path) for path in files]
+    first = same_audio(files)
+    if all(info[2] == first[2] for info in infos):
+        return files
+    prepared = []
+    for index, (path, info) in enumerate(zip(files, infos)):
+        if info[2] == "2":
+            prepared.append(path)
+            continue
+        dest = os.path.join(tmp, "stereo-%02d.mp3" % index)
+        cmd = [
+            "ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-y",
+            "-i", path, "-c:a", "libmp3lame", "-ac", "2", "-ar", first[1],
+            "-b:a", MP3_RATE, dest,
+        ]
+        if run(cmd) != 0 or not os.path.isfile(dest):
+            die("Could not make this file stereo: %s" % os.path.basename(path))
+        prepared.append(dest)
+    return prepared
 
 
 def clear_xattr(path):
@@ -437,10 +860,75 @@ def name_parts(name):
 
 
 def surname_given(name):
+    # One letter й, so Books does not split the same reader into two groups.
+    name = unicodedata.normalize("NFC", name or "")
     parts = name_parts(name)
     if len(parts) < 2:
         return name.strip()
-    return "%s %s" % (parts[-1], parts[0])
+    return unicodedata.normalize("NFC", "%s %s" % (parts[-1], parts[0]))
+
+
+def person_name(text):
+    # A comment may say who reads. A site address is not a name.
+    # й stored as two marks is still the same name.
+    text = unicodedata.normalize("NFC", repair_text(text or ""))
+    text = CREDIT_WORD.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .:-–,")
+    if not text or re.search(r"www\.|https?://|@", text, re.IGNORECASE):
+        return ""
+    words = name_parts(text)
+    if not 2 <= len(words) <= 3:
+        return ""
+    for word in words:
+        if not re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\-]*", word):
+            return ""
+    return " ".join(words)
+
+
+def artist_label(text):
+    # A reader is Имя Фамилия. One word, such as Сборник, is the book artist
+    # when the files do not share one reader. Books says Unknown Author if it is empty.
+    text = unicodedata.normalize("NFC", (text or "").strip())
+    named = person_name(text)
+    if named:
+        return named, "person"
+    if re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё\-]*", text):
+        return text, "label"
+    return "", ""
+
+
+def same_person(left, right):
+    left = (left or "").strip()
+    right = (right or "").strip()
+    if not left or not right:
+        return False
+    forms = {fold(left), fold(surname_given(left))}
+    return fold(right) in forms or fold(surname_given(right)) in forms
+
+
+def file_narrator(path):
+    # Brackets in the file name are Имя Фамилия. A comment is kept as written.
+    stem = repair_text(os.path.splitext(os.path.basename(path))[0])
+    match = re.search(r"\[([^\]]+)\]", unicodedata.normalize("NFC", stem))
+    if match:
+        return surname_given(match.group(1).strip())
+    return person_name(track_tags(path).get("comment", ""))
+
+
+def narrator_mode(files):
+    # Empty when the folder names no reader and the files do not share one.
+    named = []
+    seen = []
+    for path in files:
+        name = file_narrator(path)
+        named.append(name)
+        if name and name not in seen:
+            seen.append(name)
+    if not seen:
+        return "ask", []
+    if len(seen) == 1 and all(named):
+        return "ask", seen
+    return "each", seen
 
 
 def author_full_name(author):
@@ -502,10 +990,33 @@ def year_written(author, title):
     return max(set(hits), key=hits.count)
 
 
+def shared_file_year(files):
+    # Every file named "1856 - Title 01" offers 1856. Mixed years stay blank.
+    years = []
+    for path in files:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        year, _body = file_year_and_body(stem, "")
+        if not year:
+            return ""
+        years.append(year)
+    if years and len(set(years)) == 1:
+        return years[0]
+    return ""
+
+
 def cmd_year():
+    named = guess_folder(os.path.basename(os.getcwd())).get("year") or ""
+    if re.fullmatch(r"\d{4}", named):
+        print("year\t%s" % named)
+        print("note\tfolder")
+        return
     year = year_written(env("BOOK_AUTHOR"), env("BOOK_TITLE"))
+    note = "written" if year else ""
+    if not year:
+        year = shared_file_year(chapters(os.getcwd()))
+        note = "files" if year else ""
     print("year\t%s" % year)
-    print("note\t%s" % ("written" if year else ""))
+    print("note\t%s" % note)
 
 
 def cmd_guess():
@@ -554,6 +1065,8 @@ def cmd_pattern():
     elif kind == "numbers":
         print("sample\t%s" % value)
         print("groups\t%d" % groups)
+    elif kind == "tail":
+        print("tail\t%s" % value)
 
 
 def cmd_contents():
@@ -593,12 +1106,19 @@ def require_chapters(path, expected):
         die("The contents were stored with the wrong letters: %s" % shown)
 
 
+def reader_sort(name, surname_first):
+    parts = name_parts(name)
+    if not parts:
+        return ""
+    return parts[0] if surname_first else parts[-1]
+
+
 def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
     info = same_audio(files)
+    info = (info[0], info[1], "2")
     heading = book_heading(author, title, year)
-    person = surname_given(narrator or author)
-    person_sort = name_parts(narrator or author)
-    person_sort = person_sort[-1] if person_sort else person
+    person = surname_given(narrator) if narrator else ""
+    person_sort = reader_sort(narrator, False) if narrator else ""
     out_name = book_dirname(author, title, narrator, year) + ".m4b"
     final = os.path.join(folder, out_name)
     durations = [duration_ms(path) for path in files]
@@ -607,11 +1127,12 @@ def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
         ";FFMETADATA1",
         "title=%s" % meta_escape(heading),
         "album=%s" % meta_escape(heading),
-        "artist=%s" % meta_escape(person),
-        "album_artist=%s" % meta_escape(person),
-        "composer=%s" % meta_escape(person),
         "genre=%s" % meta_escape(genre),
     ]
+    if person:
+        lines.insert(3, "artist=%s" % meta_escape(person))
+        lines.insert(4, "album_artist=%s" % meta_escape(person))
+        lines.insert(5, "composer=%s" % meta_escape(person))
     reserved = (title, heading, author, narrator, genre, year)
     total = len(files)
     expected = []
@@ -628,12 +1149,13 @@ def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
         lines.append("END=%d" % end)
         lines.append("title=%s" % meta_escape(label))
         cursor = end
-    concat = []
-    for path in files:
-        escaped = os.path.abspath(path).replace("'", r"'\''")
-        concat.append("file '%s'" % escaped)
     encoder = "aac_at" if has_encoder("aac_at") else "aac"
     with tempfile.TemporaryDirectory() as tmp:
+        audio_files = stereo_inputs(files, tmp)
+        concat = []
+        for path in audio_files:
+            escaped = os.path.abspath(path).replace("'", r"'\''")
+            concat.append("file '%s'" % escaped)
         meta_path = os.path.join(tmp, "meta.txt")
         list_path = os.path.join(tmp, "list.txt")
         with open(meta_path, "w", encoding="utf-8") as handle:
@@ -662,20 +1184,23 @@ def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
         sort_cmd = [
             "exiftool", "-overwrite_original",
             "-ItemList:Author=%s" % author_full,
-            "-ItemList:Artist=%s" % person,
-            "-ItemList:AlbumArtist=%s" % person,
-            "-ItemList:Performer=%s" % person,
-            "-ItemList:Narrator=%s" % person,
-            "-ItemList:Composer=%s" % person,
-            "-XMP:Artist=%s" % person,
-            "-XMP:Composer=%s" % person,
-            "-ItemList:SortArtist=%s" % person_sort,
-            "-ItemList:SortAlbumArtist=%s" % person_sort,
             "-ItemList:SortName=%s" % heading,
             "-ItemList:SortAlbum=%s" % heading,
-            "-ItemList:SortComposer=%s" % person_sort,
-            final,
         ]
+        if person:
+            sort_cmd += [
+                "-ItemList:Artist=%s" % person,
+                "-ItemList:AlbumArtist=%s" % person,
+                "-ItemList:Performer=%s" % person,
+                "-ItemList:Narrator=%s" % person,
+                "-ItemList:Composer=%s" % person,
+                "-XMP:Artist=%s" % person,
+                "-XMP:Composer=%s" % person,
+                "-ItemList:SortArtist=%s" % person_sort,
+                "-ItemList:SortAlbumArtist=%s" % person_sort,
+                "-ItemList:SortComposer=%s" % person_sort,
+            ]
+        sort_cmd.append(final)
         if run(sort_cmd) != 0:
             die("exiftool could not write sort fields")
         clear_xattr(final)
@@ -684,8 +1209,16 @@ def write_m4b(folder, files, title, author, author_full, narrator, genre, year):
     print(out_name, flush=True)
 
 
-def track_filename(index, total, title, year):
-    return contents_line(index, total, title, year) + ".mp3"
+def track_filename(index, total, title, year, chapter=""):
+    width = max(2, len(str(total)))
+    number = "%0*d" % (width, index)
+    shown = safe_filename(title)
+    detail = safe_filename(chapter) if chapter else ""
+    if detail and fold(detail) != fold(shown):
+        tail = detail
+    else:
+        tail = year
+    return "%s. %s%s%s.mp3" % (number, shown, DOT, tail)
 
 
 def write_mp3(folder, files, title, author, author_full, narrator, genre, year):
@@ -700,18 +1233,35 @@ def write_mp3(folder, files, title, author, author_full, narrator, genre, year):
     total = len(files)
     failed = []
     heading = book_heading(author, title, year)
-    person = surname_given(narrator or author)
-    person_sort = name_parts(narrator or author)
-    person_sort = person_sort[-1] if person_sort else person
+    # One narrator: the album artist is that reader. A word such as Сборник is
+    # only the book artist. Many readers: the author, so the album stays one piece.
+    # Each file's artist is still its own reader.
+    one_reader = artist_label(narrator)[1] == "person"
+    if one_reader:
+        album_person = surname_given(narrator)
+        album_sort = reader_sort(narrator, False)
+    else:
+        album_person = author_full
+        album_sort = reader_sort(author_full, True)
     reserved = (title, heading, author, narrator, genre, year)
     first_name = ""
     for index, path in enumerate(files, 1):
         name = readable(chapter_name(path, index, reserved) or title)
         label = contents_line(index, total, name, year, title)
         readable(label)
-        dest = os.path.join(dest_dir, track_filename(index, total, title, year))
+        dest = os.path.join(dest_dir, track_filename(index, total, title, year, name))
         if index == 1:
             first_name = os.path.basename(dest)
+        own = file_narrator(path)
+        if one_reader and (not own or same_person(own, album_person)):
+            person = album_person
+            person_sort = album_sort
+        elif own:
+            person = own
+            person_sort = reader_sort(own, True)
+        else:
+            person = ""
+            person_sort = ""
         codec = audio_info(path)[0]
         cmd = [
             "ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-y",
@@ -725,20 +1275,23 @@ def write_mp3(folder, files, title, author, author_full, narrator, genre, year):
             "-id3v2_version", "4",
             "-metadata", "title=%s" % label,
             "-metadata", "album=%s" % heading,
-            "-metadata", "artist=%s" % person,
-            "-metadata", "album_artist=%s" % person,
-            "-metadata", "artist-sort=%s" % person_sort,
             "-metadata", "album-sort=%s" % heading,
             "-metadata", "title-sort=%s" % label,
             "-metadata", "author=%s" % author_full,
-            "-metadata", "narrator=%s" % person,
             "-metadata", "track=%d/%d" % (index, total),
             "-metadata", "genre=%s" % genre,
         ]
-        cmd += [
-            "-metadata", "composer=%s" % person,
-            "-metadata", "performer=%s" % person,
-        ]
+        if album_person:
+            cmd += ["-metadata", "album_artist=%s" % album_person]
+        if person_sort or album_sort:
+            cmd += ["-metadata", "artist-sort=%s" % (person_sort or album_sort)]
+        if person:
+            cmd += [
+                "-metadata", "artist=%s" % person,
+                "-metadata", "narrator=%s" % person,
+                "-metadata", "composer=%s" % person,
+                "-metadata", "performer=%s" % person,
+            ]
         cmd.append(dest)
         print("[%d/%d] %s" % (index, total, os.path.basename(dest)), flush=True)
         if run(cmd) != 0:
@@ -788,6 +1341,21 @@ def main():
         return
     if action == "reader":
         print(surname_given(" ".join(sys.argv[2:])))
+        return
+    if action == "kind":
+        _text, kind = artist_label(" ".join(sys.argv[2:]))
+        if not kind:
+            sys.exit(1)
+        print(kind)
+        return
+    if action == "narrators":
+        files = chapters(os.getcwd())
+        mode, names = narrator_mode(files)
+        if env("BOOK_NARRATOR"):
+            mode = "ask"
+        print("mode\t%s" % mode)
+        for name in names:
+            print("reader\t%s" % name)
         return
     if action not in {"m4b", "mp3"}:
         die("unknown action: %s" % action)

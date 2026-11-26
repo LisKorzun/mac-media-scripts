@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Put one narrator into an already packed book. Audio is not re-encoded.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+ask() {
+  local label="$1"
+  local default="$2"
+  local reply
+  printf "${C_PROMPT}%s [%s]:${C_RESET} " "$label" "$default" >&2
+  read -r reply || reply=""
+  if [[ -z "$reply" ]]; then
+    reply="$default"
+  fi
+  printf '%s' "$reply"
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/set-narrator.py"
+
+need python3
+need ffmpeg
+need ffprobe
+need exiftool
+
+folder=""
+file=""
+narrator=""
+dir=""
+mp3_count="0"
+plan_out=$(python3 "$PY" plan) || exit 1
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    folder) folder=$value ;;
+    file) file=$value ;;
+    narrator) narrator=$value ;;
+    dir) dir=$value ;;
+    mp3) mp3_count=$value ;;
+  esac
+done <<<"$plan_out"
+
+banner "Narrator"
+echo "${C_MUTED}A reader is Имя Фамилия. One word, such as Сборник, is the book artist when readers differ.${C_RESET}"
+echo "${C_MUTED}Enter keeps the name in brackets.${C_RESET}"
+echo "${C_MUTED}The book folder, the Books file and the mp3 folder take that name.${C_RESET}"
+echo "${C_MUTED}A folder already named Author · Title · Year keeps the author and gains the narrator.${C_RESET}"
+echo "${C_MUTED}Chapter files keep their names. Sound is copied, not re-encoded.${C_RESET}"
+echo
+printf "${C_PROMPT}Folder${C_RESET} %s\n" "$folder"
+printf "${C_PROMPT}M4B${C_RESET}    %s\n" "$file"
+if [[ -n "$dir" ]]; then
+  printf "${C_PROMPT}MP3${C_RESET}    %s\n" "$dir"
+  if [[ "$mp3_count" == "1" ]]; then
+    echo "${C_MUTED}1 file${C_RESET}"
+  else
+    echo "${C_MUTED}${mp3_count} files${C_RESET}"
+  fi
+else
+  echo "${C_MUTED}MP3: none${C_RESET}"
+fi
+
+echo
+reply=$(ask "Narrator" "$narrator")
+while ! python3 "$PY" name "$reply"; do
+  echo "Type one word, such as Сборник, or a name: Имя Фамилия." >&2
+  reply=$(ask "Narrator" "$narrator")
+done
+
+new_folder=""
+new_file=""
+new_dir=""
+reader=""
+kind=""
+preview_out=$(BOOK_NARRATOR="$reply" python3 "$PY" preview) || exit 1
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    folder) new_folder=$value ;;
+    file) new_file=$value ;;
+    dir) new_dir=$value ;;
+    reader) reader=$value ;;
+    kind) kind=$value ;;
+  esac
+done <<<"$preview_out"
+
+echo
+echo "Folder      $new_folder"
+echo "File        $new_file"
+if [[ -n "$new_dir" ]]; then
+  echo "MP3         $new_dir"
+fi
+echo "In the file $reader"
+if [[ "$kind" == "label" ]]; then
+  echo "${C_MUTED}Each mp3 keeps its reader. This word is only the book artist.${C_RESET}"
+fi
+echo
+printf "${C_PROMPT}Write this name? [Y/n]:${C_RESET} "
+read -r go
+go=${go:-Y}
+case "$go" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+BOOK_NARRATOR="$reply" python3 "$PY" write
+picked "Done"
+echo "${C_MUTED}Remove the book from Books and add the file again. Copy the mp3 folder to the TV again.${C_RESET}"

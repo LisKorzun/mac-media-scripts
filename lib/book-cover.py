@@ -6,6 +6,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -114,6 +115,10 @@ def find_portrait(folder):
 
 
 def guess_title(folder_name):
+    folder_name = norm(folder_name).strip()
+    stem, ext = os.path.splitext(folder_name)
+    if ext.lower() in {".mp3", ".m4a", ".m4b", ".wav", ".flac"}:
+        folder_name = stem.strip()
     match = re.match(
         r"^(?P<author>.+?)\s+[-–—]\s+(?P<title>.+?)(?:\s*\[(?P<narrator>[^\]]+)\])?\s*$",
         folder_name,
@@ -160,7 +165,13 @@ def cover_crop(image, width, height):
     return resized.crop((left, top, left + width, top + height))
 
 
+def norm(text):
+    # macOS folder names store й as и plus a mark. Angelica only has the whole letter.
+    return unicodedata.normalize("NFC", text or "")
+
+
 def explicit_lines(title):
+    title = norm(title)
     if "/" not in title:
         line = re.sub(r"\s+", " ", title).strip().upper()
         return [line] if line else None
@@ -171,6 +182,7 @@ def explicit_lines(title):
 
 
 def words_of(title):
+    title = norm(title)
     return [word for word in re.sub(r"\s+", " ", title).strip().upper().split(" ") if word]
 
 
@@ -312,12 +324,55 @@ def cmd_guess():
     print("title\t%s" % guess_title(os.path.basename(folder)))
 
 
-def cmd_lines():
-    title = os.environ.get("BOOK_TITLE", "").strip()
+def cover_plan(title, count):
+    # A / in the title places the breaks. Otherwise count is 1, 2, or 3.
+    cleaned = re.sub(r"\s+", " ", norm(title)).strip()
+    if not cleaned:
+        die("Enter a title")
+    if "/" in cleaned:
+        return cleaned, explicit_lines(cleaned)
+    if count not in (1, 2, 3):
+        die("Type 1, 2, or 3")
+    words = [word for word in cleaned.split(" ") if word]
+    if count > len(words):
+        if len(words) == 1:
+            die("One word stays on one line. Choose 1.")
+        die("This title has %d words. Choose 1 to %d." % (len(words), min(3, len(words))))
+    if count == 1:
+        return cleaned, [cleaned.upper()]
     font = find_angelica()
     if font is None:
         die("Need font Angelica")
-    lines, _size = choose_lines(title, font, CANVAS_W, CANVAS_H)
+    preferred = cap_size(font, CANVAS_H * CAP_RATIO)
+
+    def width_of(line):
+        face = ImageFont.truetype(str(font), preferred)
+        return line_box(face, line)[0]
+
+    chosen = best_split([word.upper() for word in words], count, width_of)
+    if not chosen:
+        die("Could not split into %d lines" % count)
+    stored = []
+    index = 0
+    for line in chosen:
+        take = len(line.split(" "))
+        stored.append(" ".join(words[index:index + take]))
+        index += take
+    return " / ".join(stored), chosen
+
+
+def cmd_lines():
+    title = os.environ.get("BOOK_TITLE", "").strip()
+    raw = os.environ.get("BOOK_COVER_LINES", "").strip()
+    if raw:
+        count = int(raw) if raw.isdigit() else 0
+        stored, lines = cover_plan(title, count)
+        print("stored\t%s" % stored)
+    else:
+        font = find_angelica()
+        if font is None:
+            die("Need font Angelica")
+        lines, _size = choose_lines(title, font, CANVAS_W, CANVAS_H)
     for index, line in enumerate(lines, 1):
         print("%d\t%s" % (index, line))
 

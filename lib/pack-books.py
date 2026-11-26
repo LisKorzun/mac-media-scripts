@@ -149,6 +149,9 @@ def parse_work(name):
     match = re.fullmatch(r"(.+?)\s*\[([^\]]+)\]", name.strip())
     if match:
         return match.group(1).strip(), match.group(2).strip()
+    plain = audio().folder_label(name).strip()
+    if plain:
+        return plain, ""
     return "", ""
 
 
@@ -186,7 +189,9 @@ def cmd_works():
     for name, title, narrator, facts in list_works(os.getcwd()):
         packed = "yes" if is_packed(facts) else "no"
         cover = "yes" if facts["cover"] else "no"
-        print("\t".join([
+        # A tab is whitespace, so an empty narrator would vanish and the file
+        # count would land in the narrator field. Unit separator keeps the gap.
+        print("\x1f".join([
             name,
             title,
             narrator,
@@ -249,12 +254,13 @@ def cmd_preview():
     author = os.environ.get("BOOK_AUTHOR", "").strip()
     narrator = os.environ.get("BOOK_NARRATOR", "").strip()
     year = os.environ.get("BOOK_YEAR", "").strip()
-    if not title or not author or not narrator or not year:
-        die("Need a title, author, narrator and year")
+    if not title or not author or not year:
+        die("Need a title, author and year")
     module = audio()
-    print("folder\t%s" % module.safe_filename("%s [%s]" % (title, narrator)))
+    folder = "%s [%s]" % (title, narrator) if narrator else title
+    print("folder\t%s" % module.safe_filename(folder))
     print("file\t%s.m4b" % module.book_filename(author, title, narrator, year))
-    print("reader\t%s" % module.surname_given(narrator))
+    print("reader\t%s" % (module.surname_given(narrator) if narrator else ""))
 
 
 def cmd_place():
@@ -263,9 +269,10 @@ def cmd_place():
     current = sys.argv[2]
     title = os.environ.get("BOOK_TITLE", "").strip()
     narrator = os.environ.get("BOOK_NARRATOR", "").strip()
-    if not title or not narrator:
-        die("Need a title and a narrator")
-    target = audio().safe_filename("%s [%s]" % (title, narrator))
+    if not title:
+        die("Need a title")
+    target = "%s [%s]" % (title, narrator) if narrator else title
+    target = audio().safe_filename(target)
     want = nfc(target)
     found = ""
     for name in os.listdir(os.getcwd()):

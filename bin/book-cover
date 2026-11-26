@@ -58,7 +58,7 @@ if [[ -z "$portrait" ]]; then
   echo "${C_MUTED}png, webp, tif and heic work too. The name stays portrait.${C_RESET}"
   exit 1
 fi
-echo "${C_MUTED}Portrait: ${portrait}. White band below, title in Angelica, up to 3 lines.${C_RESET}"
+echo "${C_MUTED}Portrait: ${portrait}. White band below, title in Angelica. One line, unless you type /.${C_RESET}"
 
 banner "Title"
 echo "${C_MUTED}Enter keeps the title on one line. Type / where a line should break.${C_RESET}"

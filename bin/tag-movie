@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Rename mp4 files and write the same title, year, genre, cover, and Movie kind.
+# mp4: rename and write the same title, year, genre, cover, and Movie kind.
+# mkv: rename only. The file name is "Title · Year". Nothing is written inside.
 set -euo pipefail
 
 C_RESET=$'\033[0m'
@@ -131,9 +132,25 @@ compose_name() {
   fi
 }
 
+compose_mkv_name() {
+  local left=$1
+  if [[ -n "$3" ]]; then
+    left="$1 $3"
+  fi
+  printf '%s · %s\n' "$left" "$4"
+}
+
+film_name() {
+  if [[ "$KIND" == "mkv" ]]; then
+    compose_mkv_name "$1" "$2" "$3" "$4"
+  else
+    compose_name "$1" "$2" "$3" "$4"
+  fi
+}
+
 name_ok() {
   local bytes
-  bytes=$(python3 -c 'import sys; print(len((sys.argv[1] + ".mp4").encode("utf-8")))' "$1")
+  bytes=$(python3 -c 'import sys; print(len((sys.argv[1] + sys.argv[2]).encode("utf-8")))' "$1" ".$KIND")
   if [[ "$bytes" -gt 255 ]]; then
     echo "Name is too long for a file."
     return 1
@@ -144,7 +161,7 @@ name_ok() {
 name_taken() {
   local title=$1 src=$2 dest dir i
   dir=$(dirname "$src")
-  dest="$dir/$title.mp4"
+  dest="$dir/$title.$KIND"
   if [[ -e "$dest" && ! "$src" -ef "$dest" ]]; then
     return 0
   fi
@@ -612,6 +629,10 @@ edit_fields() {
   PROP_EN=$ANS
   ask_part_keep
   ask_year_keep
+  if [[ "$KIND" == "mkv" ]]; then
+    PROP_EN=""
+    return 0
+  fi
   genre_default=$PROP_GENRE
   pick_genre
   PROP_GENRE=$ANS
@@ -656,6 +677,9 @@ show_card() {
     echo "${C_MUTED}Found: ${PROP_FULL_RU} · ${PROP_YEAR}${C_RESET}"
   fi
   echo "Name: $title"
+  if [[ "$KIND" == "mkv" ]]; then
+    return 0
+  fi
   if [[ -n "$PROP_GENRE" ]]; then
     echo "Genre: $PROP_GENRE"
   else
@@ -675,7 +699,7 @@ card_ready() {
   if [[ -n "$PROP_EN" ]] && ! piece_ok "$PROP_EN"; then
     return 1
   fi
-  title=$(compose_name "$PROP_RU" "$PROP_EN" "$PROP_PART" "$PROP_YEAR")
+  title=$(film_name "$PROP_RU" "$PROP_EN" "$PROP_PART" "$PROP_YEAR")
   if ! name_ok "$title"; then
     return 1
   fi
@@ -724,13 +748,17 @@ manual_film() {
         break
       fi
     done
-    ask_english ""
-    en=$ANS
+    if [[ "$KIND" == "mkv" ]]; then
+      en=""
+    else
+      ask_english ""
+      en=$ANS
+    fi
     ask_part
     part=$ANS
     ask_year
     year=$ANS
-    title=$(compose_name "$ru" "$en" "$part" "$year")
+    title=$(film_name "$ru" "$en" "$part" "$year")
     if ! name_ok "$title"; then
       continue
     fi
@@ -741,6 +769,11 @@ manual_film() {
     picked "Name: $title"
     if ! confirm_yes "Use this name?"; then
       continue
+    fi
+    if [[ "$KIND" == "mkv" ]]; then
+      PROP_YEAR=$year
+      remember_plan "$src" "$title" "" "" ""
+      return 0
     fi
     genre_default=""
     pick_genre
@@ -828,25 +861,46 @@ write_tags() {
 }
 
 need python3
-need exiftool
-need sips
-
-if [[ ! -d "$COVER_DIR" ]]; then
-  echo "No cover folder yet: $COVER_DIR"
-  echo "A poster download creates it. s skips the cover."
-fi
 
 files=()
 while IFS= read -r -d '' f; do
   files+=("$f")
-done < <(find . -maxdepth 1 -type f -iname '*.mp4' ! -name '.*' -print0 | sort -z)
+done < <(find . -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mkv' \) ! -name '.*' -print0 | sort -z)
 
 if [[ ${#files[@]} -eq 0 ]]; then
-  echo "No mp4 files in $(pwd)"
+  echo "No mp4 or mkv files in $(pwd)"
   exit 1
 fi
 
-banner "MP4 in this folder:"
+has_mp4=0
+has_mkv=0
+for f in "${files[@]}"; do
+  case "$(printf '%s' "${f##*.}" | tr '[:upper:]' '[:lower:]')" in
+    mp4) has_mp4=1 ;;
+    mkv) has_mkv=1 ;;
+  esac
+done
+if [[ "$has_mp4" -eq 1 && "$has_mkv" -eq 1 ]]; then
+  echo "Pick either mp4 or mkv."
+  exit 1
+fi
+if [[ "$has_mkv" -eq 1 ]]; then
+  KIND=mkv
+else
+  KIND=mp4
+  need exiftool
+  need sips
+  if [[ ! -d "$COVER_DIR" ]]; then
+    echo "No cover folder yet: $COVER_DIR"
+    echo "A poster download creates it. s skips the cover."
+  fi
+fi
+
+if [[ "$KIND" == "mkv" ]]; then
+  banner "MKV in this folder:"
+else
+  banner "MP4 in this folder:"
+fi
 i=1
 for f in "${files[@]}"; do
   printf "${C_PROMPT}%d.${C_RESET} %s\n" "$i" "${f#./}"
@@ -890,10 +944,15 @@ done
 
 banner "Name"
 echo "${C_MUTED}The file name is looked up on Kinopoisk.${C_RESET}"
-echo "${C_MUTED}Enter keeps the title and the genre. A number picks another genre. n changes the name.${C_RESET}"
-echo "${C_MUTED}Example: Пила 1 [Saw] 2004${C_RESET}"
-echo "${C_MUTED}No English title: n, then 0, then - on the English line.${C_RESET}"
-echo "${C_MUTED}The poster is saved as png in Pictures/Video. s skips a cover.${C_RESET}"
+if [[ "$KIND" == "mkv" ]]; then
+  echo "${C_MUTED}Enter keeps the name. n changes it. Only the file name changes.${C_RESET}"
+  echo "${C_MUTED}Example: Пила 1 · 2004${C_RESET}"
+else
+  echo "${C_MUTED}Enter keeps the title and the genre. A number picks another genre. n changes the name.${C_RESET}"
+  echo "${C_MUTED}Example: Пила 1 [Saw] 2004${C_RESET}"
+  echo "${C_MUTED}No English title: n, then 0, then - on the English line.${C_RESET}"
+  echo "${C_MUTED}The poster is saved as png in Pictures/Video. s skips a cover.${C_RESET}"
+fi
 echo "${C_MUTED}No internet: type the name, or s to skip that file.${C_RESET}"
 
 plan_src=()
@@ -995,6 +1054,10 @@ for src in "${chosen[@]}"; do
     edit_fields
   done
   picked "Name: $CARD_TITLE"
+  if [[ "$KIND" == "mkv" ]]; then
+    remember_plan "$src" "$CARD_TITLE" "" "" ""
+    continue
+  fi
   picked "Genre: $PROP_GENRE"
   take_poster
   picked "Cover: $ANS_NAME"
@@ -1010,7 +1073,11 @@ banner "Preview"
 i=0
 while [[ $i -lt ${#plan_src[@]} ]]; do
   echo "${plan_src[$i]#./}"
-  echo "  → ${plan_title[$i]}.mp4"
+  echo "  → ${plan_title[$i]}.$KIND"
+  if [[ "$KIND" == "mkv" ]]; then
+    i=$((i + 1))
+    continue
+  fi
   genre_shown=${plan_genre[$i]}
   cover_shown=${plan_cover_name[$i]}
   if [[ -z "$genre_shown" ]]; then
@@ -1023,7 +1090,13 @@ while [[ $i -lt ${#plan_src[@]} ]]; do
   i=$((i + 1))
 done
 echo
-if ! confirm_yes "Write these names and covers?"; then
+if [[ "$KIND" == "mkv" ]]; then
+  echo "${C_MUTED}Only the file name changes.${C_RESET}"
+  confirm_label="Rename these files?"
+else
+  confirm_label="Write these names and covers?"
+fi
+if ! confirm_yes "$confirm_label"; then
   echo "Cancelled"
   exit 0
 fi
@@ -1045,10 +1118,21 @@ while [[ $i -lt $total ]]; do
   i=$((i + 1))
   echo
   dir=$(dirname "$src")
-  dest="$dir/$title.mp4"
+  dest="$dir/$title.$KIND"
   if [[ -e "$dest" && ! "$src" -ef "$dest" ]]; then
     echo "Already exists: $(basename "$dest")"
     fail=$((fail + 1))
+    continue
+  fi
+  if [[ "$KIND" == "mkv" ]]; then
+    echo "Renaming: $(basename "$src")"
+    final=$src
+    if [[ ! "$src" -ef "$dest" ]]; then
+      mv -- "$src" "$dest"
+      final=$dest
+    fi
+    xattr -c -- "$final" 2>/dev/null || true
+    picked "$(basename "$final")"
     continue
   fi
   echo "Writing tags: $(basename "$src")"
@@ -1080,4 +1164,6 @@ if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 picked "Done"
-echo "${C_MUTED}In the TV app, add a file that is not in the library yet and see if it is under Movies.${C_RESET}"
+if [[ "$KIND" == "mp4" ]]; then
+  echo "${C_MUTED}In the TV app, add a file that is not in the library yet and see if it is under Movies.${C_RESET}"
+fi

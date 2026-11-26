@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Write one genre into an already packed book. Audio is not re-encoded.
+set -euo pipefail
+
+C_RESET=$'\033[0m'
+C_HEAD=$'\033[38;5;80m'
+C_PICK=$'\033[38;5;176m'
+C_MUTED=$'\033[38;5;245m'
+C_PROMPT=$'\033[38;5;252m'
+SEP='----------------------------------------'
+
+banner() {
+  echo
+  echo "${C_HEAD}${SEP}${C_RESET}"
+  echo "${C_HEAD}$1${C_RESET}"
+  echo "${C_HEAD}${SEP}${C_RESET}"
+}
+
+picked() {
+  echo "${C_PICK}✓ $1${C_RESET}"
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Need $1"; exit 1; }
+}
+
+trim() {
+  python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFC", sys.argv[1]).strip())' "$1"
+}
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PY="$SCRIPT_DIR/../lib/set-genre.py"
+
+need python3
+need ffmpeg
+need ffprobe
+need exiftool
+
+folder=""
+file=""
+dir=""
+mp3_count="0"
+current=""
+plan_out=$(python3 "$PY" plan) || exit 1
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    folder) folder=$value ;;
+    file) file=$value ;;
+    dir) dir=$value ;;
+    mp3) mp3_count=$value ;;
+    genre) current=$value ;;
+  esac
+done <<<"$plan_out"
+
+genres=()
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  genres+=("$line")
+done < <(python3 "$PY" list)
+if (( ${#genres[@]} == 0 )); then
+  echo "No genre list."
+  exit 1
+fi
+
+banner "Genre"
+echo "${C_MUTED}One word for this book and for each mp3 copy.${C_RESET}"
+echo "${C_MUTED}Литература is a novel or stories, such as Tolstoy. Философия is an essay or a tract.${C_RESET}"
+echo "${C_MUTED}Sound is copied, not re-encoded.${C_RESET}"
+echo
+printf "${C_PROMPT}Folder${C_RESET} %s\n" "$folder"
+printf "${C_PROMPT}M4B${C_RESET}    %s\n" "$file"
+if [[ -n "$dir" ]]; then
+  printf "${C_PROMPT}MP3${C_RESET}    %s\n" "$dir"
+  if [[ "$mp3_count" == "1" ]]; then
+    echo "${C_MUTED}1 file${C_RESET}"
+  else
+    echo "${C_MUTED}${mp3_count} files${C_RESET}"
+  fi
+else
+  echo "${C_MUTED}MP3: none${C_RESET}"
+fi
+if [[ -n "$current" ]]; then
+  echo "Now: $current"
+else
+  echo "Now: none"
+fi
+echo
+i=1
+for g in "${genres[@]}"; do
+  printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$i" "$g"
+  i=$((i + 1))
+done
+printf "${C_PROMPT}%2d.${C_RESET} %s\n" "$i" "своя"
+echo "${C_HEAD}${SEP}${C_RESET}"
+if [[ -n "$current" ]]; then
+  echo "${C_MUTED}A number from the list. Enter keeps the genre already in the file. своя asks for your own word.${C_RESET}"
+else
+  echo "${C_MUTED}A number from the list. своя asks for your own word.${C_RESET}"
+fi
+
+genre=""
+while true; do
+  printf "${C_PROMPT}Genre number:${C_RESET} "
+  IFS= read -r ans || exit 1
+  ans=$(trim "$ans")
+  if [[ -z "$ans" && -n "$current" ]]; then
+    genre=$current
+    break
+  fi
+  if [[ "$ans" == "$i" ]]; then
+    while true; do
+      printf "${C_PROMPT}Genre word:${C_RESET} "
+      IFS= read -r word || exit 1
+      if genre=$(python3 "$PY" word "$word"); then
+        break
+      fi
+      echo "Type a genre word, without / or :."
+    done
+    break
+  fi
+  if [[ "$ans" =~ ^[1-9][0-9]*$ ]] && ((10#$ans >= 1 && 10#$ans <= ${#genres[@]})); then
+    genre=${genres[$((10#$ans - 1))]}
+    break
+  fi
+  echo "Type a number from the list."
+done
+
+echo
+echo "Genre  $genre"
+echo
+printf "${C_PROMPT}Write this genre? [Y/n]:${C_RESET} "
+read -r go
+go=${go:-Y}
+case "$go" in
+  y|Y|"") ;;
+  *) echo "Cancelled"; exit 0 ;;
+esac
+
+BOOK_GENRE="$genre" python3 "$PY" write
+picked "Done"
+echo "${C_MUTED}Remove the book from Books and add the file again. Copy the mp3 folder to the TV again.${C_RESET}"
